@@ -19,8 +19,9 @@ const PERSON_COLOR = { alejandro: '#3B82F6', cristina: '#EC4899', ambos: '#10B98
 const TYPE_COLOR = {
   guardia: '#DC2626', continuidad: '#F97316', curso: '#8B5CF6', tarea: '#06B6D4', examen: '#EAB308',
 };
-const SALIENTE_COLOR = '#FECACA';
-const FREE_COLOR = { alejandro: '#BFDBFE', cristina: '#FBCFE8', ambos: '#A7F3D0' };
+const SALIENTE_COLOR = '#BBF7D0'; // verde claro
+const SALIENTE_TEXT = '#166534';
+const FREE_COLOR = { alejandro: '#BFDBFE', cristina: '#FBCFE8', ambos: '#FDE68A' };
 const SWATCHES = [
   '#EF4444', '#DC2626', '#F43F5E', '#EC4899', '#D946EF', '#A855F7', '#8B5CF6', '#6366F1',
   '#3B82F6', '#0EA5E9', '#06B6D4', '#14B8A6', '#10B981', '#22C55E', '#84CC16', '#EAB308',
@@ -36,6 +37,31 @@ const GUARDIA_PRESETS = [
   { label: '12 h día', s: '08:00', e: '20:00', d: 0 },
   { label: '12 h noche', s: '20:00', e: '08:00', d: 1 },
 ];
+// Asignaturas: color y abreviatura automáticos para tareas y exámenes
+const SUBJECTS = [
+  { name: 'AGO', short: 'AGO', color: '#1D4ED8', match: /^ago\b/i },
+  { name: 'Álgebra', short: 'ALG', color: '#EA580C', match: /^(alg|álg)/i },
+  { name: 'Sistemas Operativos', short: 'SO', color: '#15803D', match: /^(so\b|sistemas op)/i },
+];
+const subjectOf = (ev) => (['tarea', 'examen'].includes(ev.type) && ev.subject ? SUBJECTS.find((x) => x.match.test(ev.subject.trim())) : null);
+
+// Entregas del semestre (todas a las 23:59). Se añaden desde Estudios con un botón.
+const UOC_ENTREGAS = [
+  ['2026-10-02', 'Álgebra', 'Cuestionario 1 (Reto 1)'],
+  ['2026-10-14', 'AGO', 'PEC 1 + Cuestionario PEC 1'],
+  ['2026-10-30', 'Álgebra', 'Cuestionarios 2, 3, 4 y 5 (Reto 2)'],
+  ['2026-11-05', 'Sistemas Operativos', 'Práctica 1'],
+  ['2026-11-06', 'AGO', 'PEC 2 + Cuestionario PEC 2'],
+  ['2026-11-20', 'Álgebra', 'Cuestionarios 6 y 7 (Reto 3)'],
+  ['2026-11-23', 'Sistemas Operativos', 'PEC 1'],
+  ['2026-11-27', 'AGO', 'PEC 3 + Cuestionario PEC 3'],
+  ['2026-12-11', 'Álgebra', 'Cuestionarios 8, 9, 10 y 11 (Reto 4)'],
+  ['2026-12-18', 'AGO', 'PEC 4 + Cuestionario PEC 4'],
+  ['2026-12-19', 'Sistemas Operativos', 'Práctica 2'],
+  ['2026-12-22', 'Álgebra', 'Actividad R5 (síntesis, obligatoria)'],
+  ['2027-01-07', 'Sistemas Operativos', 'PEC 2'],
+];
+
 // Tipo de guardia (se guarda en el campo "subject", que las guardias no usan;
 // así no hace falta tocar la hoja ni el Apps Script)
 const GUARDIA_KIND = { normal: 'Normal', festivo: 'Festivo', especial: 'Festivo especial' };
@@ -43,7 +69,7 @@ const KIND_COLOR = { normal: '#DC2626', festivo: '#D97706', especial: '#7C3AED' 
 const KIND_ICON = { normal: '', festivo: '🎉 ', especial: '⭐ ' };
 const guardiaKind = (ev) => (ev.type !== 'guardia' ? null : GUARDIA_KIND[ev.subject] ? ev.subject : 'normal');
 const isWeekendDay = (dateStr) => [0, 6].includes(parseYmd(dateStr).getDay());
-const CONTINUIDAD = { s: '15:00', e: '20:00' }; // horario habitual de una continuidad
+const CONTINUIDAD = { s: '15:15', e: '20:00' }; // horario habitual de una continuidad
 const TOKEN_KEY = 'cal_token';
 const POLL_MS = 10000;
 
@@ -189,17 +215,22 @@ function hoursOf(ev) {
   return Math.round(hrs * 10) / 10;
 }
 
-// Saliente: el día en que termina una guardia que cruza la medianoche
-// (una guardia "todo el día" genera saliente al día siguiente)
+// Saliente de una guardia: el día siguiente, salvo viernes (no hay) y sábado (el lunes)
 function salienteDay(ev) {
   if (ev.type !== 'guardia') return null;
-  if (ev.allDay) return addDays(ev.end || ev.start, 1);
-  const sd = ymd(new Date(ev.start)), ed = ymd(new Date(ev.end));
-  return ed > sd ? ed : null;
+  const sd = ymd(evStart(ev));             // día en que empieza la guardia
+  const dow = parseYmd(sd).getDay();       // 0 domingo … 5 viernes, 6 sábado
+  if (dow === 5) return null;              // viernes: sin saliente
+  if (dow === 6) return addDays(sd, 2);    // sábado: saliente el lunes
+  return addDays(sd, 1);                   // resto: el día siguiente
 }
 
 // ── Utilidades de color ───────────────────────────────────────
-function colorOf(ev) { return ev.color || TYPE_COLOR[ev.type] || PERSON_COLOR[ev.owner]; }
+function colorOf(ev) {
+  if (ev.type === 'guardia' || ev.type === 'continuidad') return TYPE_COLOR[ev.type]; // siempre rojo / naranja
+  const subj = subjectOf(ev);
+  return ev.color || (subj && subj.color) || TYPE_COLOR[ev.type] || PERSON_COLOR[ev.owner];
+}
 function textOn(hex) {
   const c = hex.replace('#', '');
   const [r, g, b] = [0, 2, 4].map((i) => parseInt(c.slice(i, i + 2), 16));
@@ -247,9 +278,12 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
 
     out.push({
       id: 'e:' + ev.id,
-      title: (pending ? '⏳ ' : '') + TYPE_ICON[ev.type] + (ev.type === 'guardia' ? KIND_ICON[guardiaKind(ev)] : '') + ev.title,
+      title: (pending ? '⏳ ' : '') + TYPE_ICON[ev.type] + (ev.type === 'guardia' ? KIND_ICON[guardiaKind(ev)] : '')
+        + (subjectOf(ev) ? subjectOf(ev).short + ' · ' : '') + ev.title,
       start: ev.allDay ? ev.start.slice(0, 10) : ev.start,
-      end: ev.allDay ? addDays(ev.end || ev.start, 1) : (ev.end === ev.start ? null : ev.end),
+      // Entregas (inicio = fin): se les da 1 minuto para que una de 23:59 no invada el día siguiente
+      end: ev.allDay ? addDays(ev.end || ev.start, 1)
+        : (ev.end === ev.start || !ev.end ? new Date(new Date(ev.start).getTime() + 60000).toISOString() : ev.end),
       allDay: ev.allDay,
       backgroundColor: pending ? alpha(color, 0.18) : color,
       borderColor: color,
@@ -264,7 +298,7 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
         id: 's:' + ev.id,
         title: '😴 Saliente',
         start: sd, allDay: true,
-        backgroundColor: SALIENTE_COLOR, borderColor: SALIENTE_COLOR, textColor: '#991B1B',
+        backgroundColor: SALIENTE_COLOR, borderColor: SALIENTE_COLOR, textColor: SALIENTE_TEXT,
         classNames: ['ev-marca'],
         extendedProps: { kind: 'saliente', ref: ev, day: sd },
       });
@@ -369,7 +403,8 @@ function renderFilters() {
   const legend = [
     ['Alejandro', PERSON_COLOR.alejandro], ['Cristina', PERSON_COLOR.cristina], ['Juntos', PERSON_COLOR.ambos],
     ['Guardia', TYPE_COLOR.guardia], ['Saliente', SALIENTE_COLOR], ['Continuidad', TYPE_COLOR.continuidad],
-    ['Curso', TYPE_COLOR.curso], ['Tarea', TYPE_COLOR.tarea], ['Examen', TYPE_COLOR.examen], ['Libre', FREE_COLOR.ambos],
+    ['Curso', TYPE_COLOR.curso], ['Tarea', TYPE_COLOR.tarea], ['Examen', TYPE_COLOR.examen],
+    ...SUBJECTS.map((x) => [x.short, x.color]), ['Libres', FREE_COLOR.ambos],
   ];
   $('legend').replaceChildren(...legend.map(([l, c]) => h('span', {}, h('i', { class: 'dot', style: { background: c } }), l)));
 }
@@ -500,9 +535,11 @@ function openEventForm(ev, prefill = {}) {
 
   // Controles
   const iTitle = h('input', { value: v.title, maxLength: 120, placeholder: 'Título' });
+  const fTitle = field('Título', iTitle);
   const iOwner = h('div', { class: 'seg', style: { margin: 0 } });
   const iType = h('select');
-  const iSubject = h('input', { value: v.type === 'guardia' ? '' : v.subject, maxLength: 80, placeholder: 'Ej. Matemáticas II' });
+  const iSubject = h('input', { value: v.type === 'guardia' ? '' : v.subject, maxLength: 80, placeholder: 'AGO, Álgebra, Sistemas Operativos…', list: 'subjects-list' });
+  const subjectsList = h('datalist', { id: 'subjects-list' }, SUBJECTS.map((x) => h('option', { value: x.name })));
   const iTask = h('select', {}, Object.entries(TASK_LABEL).map(([k, l]) => h('option', { value: k, selected: k === v.taskStatus }, l)));
   const iAllDay = h('input', { type: 'checkbox', checked: v.allDay });
   const iSDate = h('input', { type: 'date', value: sDate });
@@ -513,6 +550,7 @@ function openEventForm(ev, prefill = {}) {
   let color = v.color || '';
 
   const fOwner = field('¿De quién es?', iOwner);
+  const fColor = editable ? field('Color', colorPicker(color, (c) => { color = c; })) : h('div');
   const fSubject = field('Asignatura', iSubject);
   const fTask = field('Estado', iTask);
   const fAllDay = h('label', { class: 'check' }, iAllDay, h('span', { id: 'lblAllDay' }, 'Todo el día'));
@@ -559,6 +597,12 @@ function openEventForm(ev, prefill = {}) {
     fTask.hidden = t !== 'tarea';
     fPresets.hidden = t !== 'guardia';
     fKind.hidden = t !== 'guardia';
+    // Guardia y continuidad: nombre opcional, sin elegir dueño ni color (rojo / naranja fijos)
+    const medical = t === 'guardia' || t === 'continuidad';
+    fOwner.hidden = medical;
+    fColor.hidden = medical;
+    fTitle.querySelector('span').textContent = medical ? 'Nombre (opcional)' : 'Título';
+    iTitle.placeholder = medical ? TYPE_LABEL[t] : 'Título';
     fAllDay.hidden = t === 'guardia';
     $('lblAllDay') && ($('lblAllDay').textContent = t === 'tarea' ? 'Sin hora concreta' : 'Todo el día');
     const allDay = t !== 'guardia' && iAllDay.checked;
@@ -598,9 +642,10 @@ function openEventForm(ev, prefill = {}) {
 
   // Recoge y valida el formulario
   function collect() {
-    const title = iTitle.value.trim();
-    if (!title) throw new Error('Pon un título');
     const type = v.type;
+    const medical = type === 'guardia' || type === 'continuidad';
+    const title = iTitle.value.trim() || (medical ? TYPE_LABEL[type] : '');
+    if (!title) throw new Error('Pon un título');
     const allDay = type !== 'guardia' && iAllDay.checked;
     if (!iSDate.value) throw new Error('Falta la fecha');
     let start, end;
@@ -616,7 +661,7 @@ function openEventForm(ev, prefill = {}) {
     }
     return {
       id: ev ? ev.id : undefined,
-      title, owner: v.owner, type, start, end, allDay, color,
+      title, owner: v.owner, type, start, end, allDay, color: medical ? '' : color,
       description: iDesc.value.trim(),
       subject: type === 'guardia' ? kind : ['tarea', 'examen'].includes(type) ? iSubject.value.trim() : '',
       taskStatus: type === 'tarea' ? iTask.value : '',
@@ -653,7 +698,7 @@ function openEventForm(ev, prefill = {}) {
 
   openSheet(isNew ? 'Nuevo' : (editable ? 'Editar' : 'Detalle'),
     ...notes,
-    field('Título', iTitle),
+    fTitle,
     fOwner,
     field('Tipo', iType),
     fSubject,
@@ -663,12 +708,13 @@ function openEventForm(ev, prefill = {}) {
     fStart,
     fEnd,
     fTask,
-    editable ? field('Color', colorPicker(color, (c) => { color = c; })) : null,
+    fColor,
+    subjectsList,
     field('Descripción', iDesc),
     editable ? h('div', { class: 'actions' }, btnSave, btnDel) : null,
   );
   sync();
-  if (isNew) iTitle.focus();
+  if (isNew && !['guardia', 'continuidad'].includes(v.type)) iTitle.focus();
 }
 
 // Pide confirmación pulsando dos veces (evita diálogos del navegador)
@@ -996,12 +1042,13 @@ function renderEstudios() {
     .sort((a, b) => evStart(a) - evStart(b));
 
   const box = $('eList');
+  const importCard = isTasks ? uocImportCard() : null;
   if (!list.length) {
-    box.replaceChildren(h('p', { class: 'empty' }, isTasks ? 'No hay tareas pendientes 🎉' : 'No hay exámenes próximos.'));
+    box.replaceChildren(...[importCard, h('p', { class: 'empty' }, isTasks ? 'No hay tareas pendientes 🎉' : 'No hay exámenes próximos.')].filter(Boolean));
     return;
   }
 
-  box.replaceChildren(h('div', { class: 'list', style: { paddingTop: '8px' } }, list.map((ev) => {
+  box.replaceChildren(...[importCard].filter(Boolean), h('div', { class: 'list', style: { paddingTop: '8px' } }, list.map((ev) => {
     const d = daysBetween(t, ymd(evStart(ev)));
     const when = d === 0 ? 'Hoy' : d === 1 ? 'Mañana' : d > 0 ? `${d} días` : `Hace ${-d} d`;
     const late = isTasks && d < 0 && ev.taskStatus !== 'entregada';
@@ -1032,6 +1079,35 @@ function renderEstudios() {
         h('div', { class: 'sub' }, [ev.subject, fmtRange(ev)].filter(Boolean).join(' · '))),
       side);
   })));
+}
+
+// Entregas UOC que aún no están en el calendario (se comparan por fecha + asignatura + título)
+function uocMissing() {
+  const have = new Set(state.data.events.filter((e) => e.type === 'tarea')
+    .map((e) => `${ymd(evStart(e))}|${e.subject}|${e.title}`));
+  return UOC_ENTREGAS.filter(([d, subj, title]) => !have.has(`${d}|${subj}|${title}`));
+}
+function uocImportCard() {
+  if (state.me !== 'alejandro') return null;
+  const missing = uocMissing();
+  if (!missing.length) return null;
+  const btn = h('button', { class: 'btn primary', onclick: async () => {
+    btn.disabled = true;
+    try {
+      for (let i = 0; i < missing.length; i++) {
+        btn.textContent = `Añadiendo ${i + 1}/${missing.length}…`;
+        const [d, subj, title] = missing[i];
+        const due = localDT(d, '23:59').toISOString();
+        await api('saveEvent', { title, owner: 'alejandro', type: 'tarea', subject: subj, taskStatus: 'pendiente',
+          start: due, end: due, allDay: false, color: '', description: 'Entrega UOC · vence a las 23:59' });
+      }
+      await refresh();
+      toast('Entregas añadidas');
+    } catch (e) { handleError(e); await refresh().catch(() => {}); }
+  } }, `Añadir ${missing.length} entregas`);
+  return h('div', { class: 'note', style: { margin: '8px 12px 0', display: 'flex', alignItems: 'center', gap: '10px' } },
+    h('div', { style: { flex: 1 } }, h('b', {}, '📥 Entregas del semestre'), h('div', { class: 'sub' }, 'AGO · Álgebra · Sistemas Operativos (23:59)')),
+    btn);
 }
 
 // ── Rutinas ──────────────────────────────────────────────────
