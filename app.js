@@ -36,6 +36,7 @@ const GUARDIA_PRESETS = [
   { label: '12 h día', s: '08:00', e: '20:00', d: 0 },
   { label: '12 h noche', s: '20:00', e: '08:00', d: 1 },
 ];
+const CONTINUIDAD = { s: '15:00', e: '20:00' }; // horario habitual de una continuidad
 const TOKEN_KEY = 'cal_token';
 const POLL_MS = 10000;
 
@@ -48,6 +49,7 @@ const state = {
   filter: pref('cal_filter', 'todo'),
   view: pref('cal_view', 'dayGridMonth'),
   estudiosTab: 'tareas',
+  guardiasFilter: 'todo', // todo | guardia | continuidad | curso
 };
 let calendar = null;
 
@@ -441,7 +443,10 @@ function openDaySheet(day, time) {
   }, label);
 
   const quick = [h('button', { class: 'btn primary', onclick: () => openEventForm(null, { date: day, time }) }, '+ Evento')];
-  if (state.me === 'cristina') quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'guardia' }) }, '+ Guardia'));
+  if (state.me === 'cristina') {
+    quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'guardia' }) }, '+ Guardia'));
+    quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'continuidad' }) }, '+ Continuidad'));
+  }
   if (state.me === 'alejandro') {
     quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'tarea' }) }, '+ Tarea'));
     quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'examen', time: time || '09:00' }) }, '+ Examen'));
@@ -465,7 +470,7 @@ function openEventForm(ev, prefill = {}) {
   const editable = isNew || canEdit(ev.owner);
   const v = ev
     ? { ...ev }
-    : { title: '', owner: state.me, type: prefill.type || 'general', allDay: !prefill.time && !['guardia', 'examen'].includes(prefill.type),
+    : { title: '', owner: state.me, type: prefill.type || 'general', allDay: !prefill.time && !['guardia', 'continuidad', 'examen'].includes(prefill.type),
         description: '', color: '', subject: '', taskStatus: 'pendiente' };
   if (!allowedTypes(v.owner).includes(v.type)) v.type = 'general';
 
@@ -547,14 +552,24 @@ function openEventForm(ev, prefill = {}) {
   });
   iType.addEventListener('change', () => {
     v.type = iType.value;
-    if (v.type === 'guardia' && isNew) { const p = GUARDIA_PRESETS[0]; iSTime.value = p.s; iETime.value = p.e; iEDate.value = addDays(iSDate.value, p.d); }
+    if (isNew) applyTypeDefaults();
     sync();
   });
   iAllDay.addEventListener('change', sync);
 
   renderOwner();
   renderTypes();
-  if (isNew && v.type === 'guardia') { const p = GUARDIA_PRESETS[0]; iSTime.value = p.s; iETime.value = p.e; iEDate.value = addDays(iSDate.value, p.d); }
+  // Horario por defecto según el tipo: guardia 24 h (8–8), continuidad 15:00–20:00
+  function applyTypeDefaults() {
+    if (v.type === 'guardia') {
+      const p = GUARDIA_PRESETS[0];
+      iSTime.value = p.s; iETime.value = p.e; iEDate.value = addDays(iSDate.value, p.d);
+    } else if (v.type === 'continuidad') {
+      iAllDay.checked = false;
+      iSTime.value = CONTINUIDAD.s; iETime.value = CONTINUIDAD.e; iEDate.value = iSDate.value;
+    }
+  }
+  if (isNew) applyTypeDefaults();
 
   // Recoge y valida el formulario
   function collect() {
@@ -751,16 +766,23 @@ function groupByMonth(list, dateOf) {
 
 // ── Guardias ─────────────────────────────────────────────────
 function renderGuardias() {
+  const opts = [['todo', 'Todo'], ['guardia', 'Guardias'], ['continuidad', 'Continuidades'], ['curso', 'Cursos']];
+  $('gFilters').replaceChildren(...opts.map(([k, l]) => h('button', {
+    class: 'chip' + (state.guardiasFilter === k ? ' on' : ''),
+    onclick: () => { state.guardiasFilter = k; renderGuardias(); },
+  }, l)));
+  const gf = state.guardiasFilter;
   const showPast = $('gPast').checked;
   const now = new Date();
   const list = state.data.events
     .filter((e) => e.owner === 'cristina' && ['guardia', 'continuidad', 'curso'].includes(e.type))
+    .filter((e) => gf === 'todo' || e.type === gf)
     .filter((e) => showPast || evEnd(e) >= now || (e.allDay && ymd(evEnd(e)) >= today()))
     .sort((a, b) => evStart(a) - evStart(b));
 
   const box = $('gList');
   if (!list.length) {
-    box.replaceChildren(h('p', { class: 'empty' }, state.me === 'cristina' ? 'No hay guardias próximas. Pulsa + para añadir una.' : 'Cristina no tiene guardias próximas.'));
+    box.replaceChildren(h('p', { class: 'empty' }, state.me === 'cristina' ? 'No hay nada próximo. Pulsa + para añadir.' : 'Cristina no tiene nada próximo.'));
     return;
   }
   box.replaceChildren(...groupByMonth(list, evStart).flatMap((g) => [
@@ -899,7 +921,7 @@ function renderFab() {
 function onFab() {
   const t = state.tab;
   if (t === 'calendar') return openEventForm(null, { date: calendar ? ymd(calendar.getDate()) : today() });
-  if (t === 'guardias') return openEventForm(null, { type: 'guardia' });
+  if (t === 'guardias') return openEventForm(null, { type: state.guardiasFilter === 'todo' ? 'guardia' : state.guardiasFilter });
   if (t === 'estudios') return openEventForm(null, { type: state.estudiosTab === 'tareas' ? 'tarea' : 'examen', time: state.estudiosTab === 'tareas' ? null : '09:00' });
   if (t === 'rutinas') return openSeriesForm(null);
 }
