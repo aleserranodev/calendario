@@ -36,6 +36,13 @@ const GUARDIA_PRESETS = [
   { label: '12 h día', s: '08:00', e: '20:00', d: 0 },
   { label: '12 h noche', s: '20:00', e: '08:00', d: 1 },
 ];
+// Tipo de guardia (se guarda en el campo "subject", que las guardias no usan;
+// así no hace falta tocar la hoja ni el Apps Script)
+const GUARDIA_KIND = { normal: 'Normal', festivo: 'Festivo', especial: 'Festivo especial' };
+const KIND_COLOR = { normal: '#DC2626', festivo: '#D97706', especial: '#7C3AED' };
+const KIND_ICON = { normal: '', festivo: '🎉 ', especial: '⭐ ' };
+const guardiaKind = (ev) => (ev.type !== 'guardia' ? null : GUARDIA_KIND[ev.subject] ? ev.subject : 'normal');
+const isWeekendDay = (dateStr) => [0, 6].includes(parseYmd(dateStr).getDay());
 const CONTINUIDAD = { s: '15:00', e: '20:00' }; // horario habitual de una continuidad
 const TOKEN_KEY = 'cal_token';
 const POLL_MS = 10000;
@@ -50,6 +57,9 @@ const state = {
   view: pref('cal_view', 'dayGridMonth'),
   estudiosTab: 'tareas',
   guardiasFilter: 'todo', // todo | guardia | continuidad | curso
+  guardiasMode: 'lista',   // lista (próximas) | mes (registro mensual para la nómina)
+  registroFilter: 'todo',  // todo | guardias | normal | festivo | especial | continuidad | curso
+  guardiasMonth: null,     // 'YYYY-MM-01' del mes que se está viendo en el resumen
 };
 let calendar = null;
 
@@ -237,7 +247,7 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
 
     out.push({
       id: 'e:' + ev.id,
-      title: (pending ? '⏳ ' : '') + TYPE_ICON[ev.type] + ev.title,
+      title: (pending ? '⏳ ' : '') + TYPE_ICON[ev.type] + (ev.type === 'guardia' ? KIND_ICON[guardiaKind(ev)] : '') + ev.title,
       start: ev.allDay ? ev.start.slice(0, 10) : ev.start,
       end: ev.allDay ? addDays(ev.end || ev.start, 1) : (ev.end === ev.start ? null : ev.end),
       allDay: ev.allDay,
@@ -492,7 +502,7 @@ function openEventForm(ev, prefill = {}) {
   const iTitle = h('input', { value: v.title, maxLength: 120, placeholder: 'Título' });
   const iOwner = h('div', { class: 'seg', style: { margin: 0 } });
   const iType = h('select');
-  const iSubject = h('input', { value: v.subject, maxLength: 80, placeholder: 'Ej. Matemáticas II' });
+  const iSubject = h('input', { value: v.type === 'guardia' ? '' : v.subject, maxLength: 80, placeholder: 'Ej. Matemáticas II' });
   const iTask = h('select', {}, Object.entries(TASK_LABEL).map(([k, l]) => h('option', { value: k, selected: k === v.taskStatus }, l)));
   const iAllDay = h('input', { type: 'checkbox', checked: v.allDay });
   const iSDate = h('input', { type: 'date', value: sDate });
@@ -510,7 +520,20 @@ function openEventForm(ev, prefill = {}) {
     type: 'button', class: 'chip',
     onclick: () => { iSTime.value = p.s; iETime.value = p.e; iEDate.value = addDays(iSDate.value, p.d); },
   }, p.label)));
-  const fPresets = field('Tipo de guardia', presets);
+  const fPresets = field('Duración', presets);
+
+  // Tipo de guardia. En una guardia nueva se propone "Festivo" si cae en sábado o domingo,
+  // hasta que se elija a mano.
+  let kind = ev ? (guardiaKind(ev) || 'normal') : (isWeekendDay(sDate) ? 'festivo' : 'normal');
+  let kindTouched = !!ev;
+  const iKind = h('div', { class: 'seg', style: { margin: 0 } });
+  const renderKind = () => iKind.replaceChildren(...Object.entries(GUARDIA_KIND).map(([k, l]) => h('button', {
+    type: 'button', class: kind === k ? 'on' : '', disabled: !editable,
+    style: kind === k ? { color: KIND_COLOR[k] } : null,
+    onclick: () => { kind = k; kindTouched = true; renderKind(); },
+  }, KIND_ICON[k] + l)));
+  renderKind();
+  const fKind = field('Tipo de guardia', iKind);
   const fStart = field('Inicio', h('div', { class: 'row2' }, iSDate, iSTime));
   const fEnd = field('Fin', h('div', { class: 'row2' }, iEDate, iETime));
 
@@ -535,6 +558,7 @@ function openEventForm(ev, prefill = {}) {
     fSubject.hidden = !['tarea', 'examen'].includes(t);
     fTask.hidden = t !== 'tarea';
     fPresets.hidden = t !== 'guardia';
+    fKind.hidden = t !== 'guardia';
     fAllDay.hidden = t === 'guardia';
     $('lblAllDay') && ($('lblAllDay').textContent = t === 'tarea' ? 'Sin hora concreta' : 'Todo el día');
     const allDay = t !== 'guardia' && iAllDay.checked;
@@ -549,6 +573,7 @@ function openEventForm(ev, prefill = {}) {
   iSDate.addEventListener('change', () => {
     if (iSDate.value && prevS) iEDate.value = addDays(iEDate.value || prevS, daysBetween(prevS, iSDate.value));
     prevS = iSDate.value;
+    if (!kindTouched && iSDate.value) { kind = isWeekendDay(iSDate.value) ? 'festivo' : 'normal'; renderKind(); }
   });
   iType.addEventListener('change', () => {
     v.type = iType.value;
@@ -593,7 +618,7 @@ function openEventForm(ev, prefill = {}) {
       id: ev ? ev.id : undefined,
       title, owner: v.owner, type, start, end, allDay, color,
       description: iDesc.value.trim(),
-      subject: ['tarea', 'examen'].includes(type) ? iSubject.value.trim() : '',
+      subject: type === 'guardia' ? kind : ['tarea', 'examen'].includes(type) ? iSubject.value.trim() : '',
       taskStatus: type === 'tarea' ? iTask.value : '',
     };
   }
@@ -632,6 +657,7 @@ function openEventForm(ev, prefill = {}) {
     fOwner,
     field('Tipo', iType),
     fSubject,
+    fKind,
     fPresets,
     fAllDay,
     fStart,
@@ -766,6 +792,12 @@ function groupByMonth(list, dateOf) {
 
 // ── Guardias ─────────────────────────────────────────────────
 function renderGuardias() {
+  $('gModes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.guardiasMode));
+  const isMonth = state.guardiasMode === 'mes';
+  $('gPastWrap').hidden = isMonth;
+  $('gFilters').hidden = isMonth;
+  if (isMonth) return renderGuardiasMes();
+
   const opts = [['todo', 'Todo'], ['guardia', 'Guardias'], ['continuidad', 'Continuidades'], ['curso', 'Cursos']];
   $('gFilters').replaceChildren(...opts.map(([k, l]) => h('button', {
     class: 'chip' + (state.guardiasFilter === k ? ' on' : ''),
@@ -797,10 +829,156 @@ function renderGuardias() {
           h('div', { class: 'sub' }, fmtRange(ev)),
           sal ? h('div', { class: 'sub' }, '😴 Saliente: ' + fmtDay(parseYmd(sal))) : null),
         h('div', { class: 'side' },
-          h('span', { class: 'tag', style: { background: alpha(colorOf(ev), 0.15), color: colorOf(ev) } }, TYPE_LABEL[ev.type]),
+          ev.type === 'guardia'
+            ? h('span', { class: 'tag', style: { background: alpha(KIND_COLOR[guardiaKind(ev)], 0.15), color: KIND_COLOR[guardiaKind(ev)] } },
+                KIND_ICON[guardiaKind(ev)] + (guardiaKind(ev) === 'normal' ? 'Guardia' : GUARDIA_KIND[guardiaKind(ev)]))
+            : h('span', { class: 'tag', style: { background: alpha(colorOf(ev), 0.15), color: colorOf(ev) } }, TYPE_LABEL[ev.type]),
           hrs ? h('span', { class: 'sub' }, `${hrs} h`) : null));
     })),
   ]));
+}
+
+// ── Registro mensual de guardias y continuidades (para la nómina) ──
+// Incluye los eventos sueltos y las continuidades creadas como rutina.
+// Cada turno cuenta en el mes en que empieza.
+function turnosDelMes(monthStart) {
+  const m = parseYmd(monthStart);
+  const from = monthStart;
+  const to = ymd(new Date(m.getFullYear(), m.getMonth() + 1, 1));
+  const items = [];
+
+  for (const ev of state.data.events) {
+    if (ev.owner !== 'cristina' || !['guardia', 'continuidad', 'curso'].includes(ev.type)) continue;
+    const d = ymd(evStart(ev));
+    if (d < from || d >= to) continue;
+    items.push({ type: ev.type, kind: guardiaKind(ev), day: d, start: evStart(ev), end: evEnd(ev),
+      allDay: ev.allDay, hours: hoursOf(ev), title: ev.title, ref: ev });
+  }
+  for (const sr of state.data.series) {
+    if (sr.owner !== 'cristina' || !['continuidad', 'curso'].includes(sr.type)) continue;
+    for (let d = sr.startDate > from ? sr.startDate : from; d < to; d = addDays(d, 1)) {
+      if (sr.endDate && d > sr.endDate) break;
+      if (!sr.weekdays.includes(parseYmd(d).getDay()) || sr.exdates.includes(d)) continue;
+      const st = localDT(d, sr.startTime), en = localDT(d, sr.endTime);
+      items.push({ type: sr.type, kind: null, day: d, start: st, end: en, allDay: false,
+        hours: Math.round((en - st) / 36e5 * 10) / 10, title: sr.title, series: sr });
+    }
+  }
+  return items.sort((a, b) => a.start - b.start);
+}
+
+const REGISTRO_FILTERS = [
+  ['todo', 'Todo'], ['guardias', 'Todas las guardias'], ['normal', 'Normales'], ['festivo', '🎉 Festivas'],
+  ['especial', '⭐ Festivos especiales'], ['continuidad', 'Continuidades'], ['curso', 'Cursos'],
+];
+function matchRegistro(x, f) {
+  if (f === 'todo') return true;
+  if (f === 'guardias') return x.type === 'guardia';
+  if (['normal', 'festivo', 'especial'].includes(f)) return x.type === 'guardia' && x.kind === f;
+  return x.type === f;
+}
+const sumHours = (arr) => Math.round(arr.reduce((t, x) => t + (x.hours || 0), 0) * 10) / 10;
+
+function renderGuardiasMes() {
+  if (!state.guardiasMonth) state.guardiasMonth = today().slice(0, 7) + '-01';
+  const month = state.guardiasMonth;
+  const mDate = parseYmd(month);
+  const all = turnosDelMes(month);
+  const f = state.registroFilter;
+  const items = all.filter((x) => matchRegistro(x, f));
+  const title = fmtMonth(mDate);
+
+  const goMonth = (y, mIdx) => { state.guardiasMonth = ymd(new Date(y, mIdx, 1)); renderGuardias(); };
+  const setFilter = (k) => { state.registroFilter = state.registroFilter === k && k !== 'todo' ? 'todo' : k; renderGuardias(); };
+
+  // 1. Navegación: ‹ Mes › + selector de mes + tira con los 12 meses del año
+  const monthInput = h('input', { type: 'month', value: month.slice(0, 7), style: { position: 'absolute', opacity: 0, inset: 0 },
+    onchange: (e) => { if (e.target.value) { const [y, mm] = e.target.value.split('-').map(Number); goMonth(y, mm - 1); } } });
+  const nav = h('div', { class: 'month-nav' },
+    h('button', { class: 'icon-btn', 'aria-label': 'Mes anterior', onclick: () => goMonth(mDate.getFullYear(), mDate.getMonth() - 1) }, '‹'),
+    h('h3', { style: { position: 'relative' } }, title, ' ▾', monthInput),
+    h('button', { class: 'icon-btn', 'aria-label': 'Mes siguiente', onclick: () => goMonth(mDate.getFullYear(), mDate.getMonth() + 1) }, '›'));
+
+  const year = mDate.getFullYear();
+  const strip = h('div', { class: 'chips month-strip' }, Array.from({ length: 12 }, (_, i) => {
+    const key = ymd(new Date(year, i, 1));
+    const n = turnosDelMes(key).filter((x) => matchRegistro(x, f === 'todo' ? 'todo' : f)).length;
+    const label = new Intl.DateTimeFormat('es-ES', { month: 'short' }).format(new Date(year, i, 1)).replace('.', '');
+    return h('button', { class: 'chip mchip' + (key === month ? ' on' : ''), onclick: () => goMonth(year, i) },
+      cap(label), h('small', {}, n || '–'));
+  }));
+
+  // 2. Tarjetas del mes (tocar una = filtrar por ella)
+  const g = all.filter((x) => x.type === 'guardia');
+  const byKind = (k) => g.filter((x) => x.kind === k);
+  const cont = all.filter((x) => x.type === 'continuidad');
+  const stat = (key, color, list, label) => h('button', {
+    class: 'stat' + (f === key ? ' on' : ''), style: { borderTopColor: color }, onclick: () => setFilter(key),
+  }, h('div', { class: 'n' }, list.length), h('div', { class: 'l' }, label), h('div', { class: 'x' }, `${sumHours(list)} h`));
+  const stats = h('div', { class: 'stats stats-4' },
+    stat('normal', KIND_COLOR.normal, byKind('normal'), 'Guardias normales'),
+    stat('festivo', KIND_COLOR.festivo, byKind('festivo'), '🎉 Festivas'),
+    stat('especial', KIND_COLOR.especial, byKind('especial'), '⭐ Festivos especiales'),
+    stat('continuidad', TYPE_COLOR.continuidad, cont, 'Continuidades'));
+
+  // 3. Filtros
+  const chips = h('div', { class: 'chips', style: { padding: '10px 12px 4px' } }, REGISTRO_FILTERS.map(([k, l]) =>
+    h('button', { class: 'chip' + (f === k ? ' on' : ''), onclick: () => { state.registroFilter = k; renderGuardias(); } }, l)));
+
+  // 4. Tabla del mes
+  const short = (d) => (d.getMinutes() ? hm(d) : String(d.getHours())); // 15:00 → "15"
+  const hhmm = (x) => (x.allDay ? 'Todo el día' : `${short(x.start)}–${short(x.end)} h`);
+  const typeTag = (x) => {
+    if (x.type === 'guardia') {
+      const c = KIND_COLOR[x.kind];
+      return h('span', { class: 'tag', style: { background: alpha(c, 0.15), color: c } }, KIND_ICON[x.kind] + (x.kind === 'normal' ? 'Guardia' : GUARDIA_KIND[x.kind]));
+    }
+    const c = TYPE_COLOR[x.type];
+    return h('span', { class: 'tag', style: { background: alpha(c, 0.15), color: c } }, TYPE_LABEL[x.type] + (x.series ? ' 🔁' : ''));
+  };
+  const row = (x) => h('div', { class: 'tr tr4', role: 'button', style: { cursor: 'pointer' },
+      onclick: () => (x.ref ? openEventForm(x.ref) : openOccurrence(x.series, x.day)) },
+    h('div', {}, fmtDay(x.start)),
+    h('div', {}, typeTag(x)),
+    h('div', { class: 'sub' }, hhmm(x)),
+    h('div', { class: 'num' }, x.hours ? `${x.hours} h` : '—'));
+  const filterLabel = REGISTRO_FILTERS.find(([k]) => k === f)[1];
+  const table = items.length
+    ? h('div', { class: 'table', style: { marginTop: '8px' } },
+        h('div', { class: 'tr tr4 th' }, h('div', {}, 'Día'), h('div', {}, 'Tipo'), h('div', {}, 'Horario'), h('div', { class: 'num' }, 'Horas')),
+        items.map(row),
+        h('div', { class: 'tr tr4 tf' }, h('div', {}, `${items.length} ${items.length === 1 ? 'turno' : 'turnos'}`), h('div', {}, f === 'todo' ? '' : filterLabel), h('div', {}), h('div', { class: 'num' }, `${sumHours(items)} h`)))
+    : h('p', { class: 'empty' }, f === 'todo' ? 'No hay guardias ni continuidades este mes.' : `No hay "${filterLabel}" este mes.`);
+
+  // 5. Copiar para comparar con la nómina
+  const texto = () => {
+    const lines = [
+      `Registro ${title}`,
+      `Guardias normales: ${byKind('normal').length} (${sumHours(byKind('normal'))} h)`,
+      `Guardias festivas: ${byKind('festivo').length} (${sumHours(byKind('festivo'))} h)`,
+      `Festivos especiales: ${byKind('especial').length} (${sumHours(byKind('especial'))} h)`,
+      `Continuidades: ${cont.length} (${sumHours(cont)} h)`,
+      '',
+    ];
+    for (const x of items) {
+      if (x.type === 'curso' && f === 'todo') continue;
+      const tipo = x.type === 'guardia' ? `Guardia ${GUARDIA_KIND[x.kind].toLowerCase()}` : TYPE_LABEL[x.type];
+      lines.push(`${fmtDay(x.start)} · ${tipo} · ${hhmm(x)}${x.hours ? ` · ${x.hours} h` : ''}`);
+    }
+    return lines.join('\n');
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(texto()); toast('Registro copiado'); }
+    catch { openSheet('Registro', h('textarea', { style: { minHeight: '260px' }, readOnly: true }, texto())); }
+  };
+
+  $('gList').replaceChildren(...[
+    nav, strip, stats, chips, table,
+    all.length ? h('div', { style: { padding: '16px 12px' } }, h('button', { class: 'btn block', onclick: copy }, '📋 Copiar registro del mes')) : null,
+  ].filter(Boolean));
+  // Centra el mes elegido en la tira de meses
+  const on = strip.querySelector('.on');
+  if (on) strip.scrollLeft = on.offsetLeft - strip.clientWidth / 2 + on.clientWidth / 2;
 }
 
 // ── Estudios ─────────────────────────────────────────────────
@@ -926,9 +1104,23 @@ function onFab() {
   if (t === 'rutinas') return openSeriesForm(null);
 }
 
+// Tema de la app en este móvil: auto (sigue al móvil) | light | dark
+function applyTheme(theme) {
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+  setPref('cal_theme', theme === 'auto' ? '' : theme);
+}
+
 function openAccount() {
+  const current = pref('cal_theme', 'auto');
+  const themeSeg = h('div', { class: 'seg', style: { margin: 0 } });
+  const renderTheme = (sel) => themeSeg.replaceChildren(...[['auto', 'Como el móvil'], ['light', '☀️ Claro'], ['dark', '🌙 Oscuro']]
+    .map(([k, l]) => h('button', { class: sel === k ? 'on' : '', onclick: () => { applyTheme(k); renderTheme(k); } }, l)));
+  renderTheme(current);
+
   openSheet('Cuenta',
     h('div', { class: 'note' }, 'Conectado como ', h('b', {}, NAMES[state.me])),
+    field('Apariencia (solo en este móvil)', themeSeg),
     h('button', { class: 'btn block', onclick: (e) => busy(e.currentTarget, async () => { await refresh(); toast('Actualizado'); closeSheet(); }, 'Cargando…') }, '🔄 Recargar datos'),
     h('button', { class: 'btn danger block', onclick: () => { closeSheet(); logout(); } }, 'Cerrar sesión en este móvil'),
   );
@@ -988,6 +1180,21 @@ function bindUI() {
   $('fab').onclick = onFab;
   document.querySelectorAll('.tabbar button').forEach((b) => { b.onclick = () => switchTab(b.dataset.tab); });
   $('gPast').onchange = renderGuardias;
+  let gx0 = null, gy0 = null;
+  $('gList').addEventListener('touchstart', (e) => { gx0 = e.touches[0].clientX; gy0 = e.touches[0].clientY; }, { passive: true });
+  $('gList').addEventListener('touchend', (e) => {
+    if (gx0 === null || state.guardiasMode !== 'mes' || e.target.closest('.month-strip, .chips')) { gx0 = null; return; }
+    const dx = e.changedTouches[0].clientX - gx0, dy = e.changedTouches[0].clientY - gy0;
+    gx0 = null;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      const d = parseYmd(state.guardiasMonth);
+      state.guardiasMonth = ymd(new Date(d.getFullYear(), d.getMonth() + (dx < 0 ? 1 : -1), 1));
+      renderGuardias();
+    }
+  }, { passive: true });
+  $('gModes').querySelectorAll('button').forEach((b) => {
+    b.onclick = () => { state.guardiasMode = b.dataset.mode; renderGuardias(); };
+  });
   $('eDone').onchange = renderEstudios;
   $('eTabs').querySelectorAll('button').forEach((b) => {
     b.onclick = () => { state.estudiosTab = b.dataset.tab; $('eDone').checked = false; renderEstudios(); };

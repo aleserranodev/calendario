@@ -15,6 +15,10 @@
   <meta name="apple-mobile-web-app-title" content="Calendario">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
+  <!-- Aplica el tema guardado en este móvil antes de pintar (evita parpadeo) -->
+  <script>
+    try { var t = localStorage.getItem('cal_theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
   <link rel="stylesheet" href="styles.css">
   <!-- FullCalendar (vistas mes / semana / día / lista) -->
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.21/index.global.min.js"></script>
@@ -67,9 +71,13 @@
       <section id="view-guardias" class="view" hidden>
         <div class="view-head">
           <h2>Guardias</h2>
-          <label class="toggle"><input type="checkbox" id="gPast"> Ver pasadas</label>
+          <label class="toggle" id="gPastWrap"><input type="checkbox" id="gPast"> Ver pasadas</label>
         </div>
-        <div id="gFilters" class="chips" style="padding:0 16px 4px"></div>
+        <div id="gModes" class="seg">
+          <button data-mode="lista">Próximas</button>
+          <button data-mode="mes">Registro mensual</button>
+        </div>
+        <div id="gFilters" class="chips" style="padding:4px 16px"></div>
         <div id="gList"></div>
       </section>
 

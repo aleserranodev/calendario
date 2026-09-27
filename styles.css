@@ -28,8 +28,9 @@
   color-scheme: light;
 }
 
+/* Oscuro: automático según el móvil, salvo que se elija "Claro" en la app */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0b1120;
     --surface: #111827;
     --surface-2: #1f2937;
@@ -41,6 +42,19 @@
     --fc-today-bg-color: rgba(244, 63, 94, .12);
     color-scheme: dark;
   }
+}
+/* Oscuro elegido a mano en la app (Cuenta → Apariencia) */
+:root[data-theme="dark"] {
+    --bg: #0b1120;
+    --surface: #111827;
+    --surface-2: #1f2937;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+    --line: #273244;
+    --accent-soft: #3f0f1f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    --fc-today-bg-color: rgba(244, 63, 94, .12);
+    color-scheme: dark;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -257,3 +271,30 @@ main { flex: 1; min-height: 0; position: relative; }
 }
 .toast.show { opacity: 1; }
 .toast.error { background: #b91c1c; }
+
+/* ── Resumen mensual de guardias (nómina) ───────────────── */
+.month-nav { display: flex; align-items: center; gap: 4px; padding: 6px 12px; }
+.month-nav h3 { flex: 1; text-align: center; font-size: 17px; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 12px; }
+.stat { background: var(--surface); border-radius: var(--radius); padding: 12px; box-shadow: var(--shadow); border-top: 4px solid var(--line); }
+.stat .n { font-size: 26px; font-weight: 800; line-height: 1.1; }
+.stat .l { font-size: 12px; color: var(--muted); font-weight: 600; }
+.stat .x { font-size: 13px; margin-top: 4px; }
+.table { margin: 0 12px; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.table .tr { display: grid; grid-template-columns: 1.4fr 1.6fr .7fr; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); font-size: 14px; align-items: center; }
+.table .tr:first-child { border-top: 0; }
+.table .th { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--muted); background: var(--surface-2); }
+.table .tf { font-weight: 800; background: var(--surface-2); }
+.table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.wk { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); margin-left: 4px; }
+
+/* Registro: tarjetas pulsables, tira de meses y tabla de 4 columnas */
+.stats-4 .stat { text-align: left; width: 100%; }
+.stat.on { outline: 2px solid var(--text); outline-offset: -2px; }
+.month-strip { padding: 2px 12px 10px; }
+.mchip { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; min-width: 52px; padding: 6px 8px; border-radius: 12px; }
+.mchip small { font-size: 11px; font-weight: 700; color: var(--muted); }
+.mchip.on small { color: var(--accent); }
+.month-nav input[type="month"] { cursor: pointer; }
+.table .tr4 { grid-template-columns: 1.1fr 1.3fr 1.1fr .6fr; }
+.table .tr4 .tag { font-size: 10px; padding: 2px 6px; }
