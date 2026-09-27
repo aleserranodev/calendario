@@ -27,6 +27,47 @@ const SWATCHES = [
   '#3B82F6', '#0EA5E9', '#06B6D4', '#14B8A6', '#10B981', '#22C55E', '#84CC16', '#EAB308',
   '#F59E0B', '#F97316', '#78716C', '#64748B',
 ];
+// ── Vacaciones ────────────────────────────────────────────────
+// Evento "general" de día completo con subject = 'vacaciones' (desde start hasta end, ambos incluidos).
+// owner: alejandro | cristina | ambos (ambos = propuesta que el otro acepta; cuenta para los dos).
+const VAC_BG = '#BBF7D0';     // fondo verde claro del día
+const VAC_PILL = '#86EFAC';   // etiqueta
+const VAC_TEXT = '#14532D';
+const isVacacion = (ev) => ev.type === 'general' && ev.subject === 'vacaciones';
+const vacPeople = (ev) => (ev.owner === 'ambos' ? ['alejandro', 'cristina'] : [ev.owner]);
+function daysOf(ev) {
+  const out = [];
+  const a = ev.start.slice(0, 10), b = (ev.end || ev.start).slice(0, 10);
+  for (let d = a; d <= b && out.length < 400; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+// Festivos nacionales de España (fijos + Viernes Santo). Añade aquí los autonómicos y locales.
+const FESTIVOS_EXTRA = []; // p. ej. '2027-02-28'
+function easter(y) { // domingo de Pascua (algoritmo de Gauss/Butcher)
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+  const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h2 = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h2 - k) % 7, m = Math.floor((a + 11 * h2 + 22 * l) / 451);
+  const month = Math.floor((h2 + l - 7 * m + 114) / 31), day = ((h2 + l - 7 * m + 114) % 31) + 1;
+  return new Date(y, month - 1, day);
+}
+const festivosCache = {};
+function festivosDe(y) {
+  if (!festivosCache[y]) {
+    const fixed = ['01-01', '01-06', '05-01', '08-15', '10-12', '11-01', '12-06', '12-08', '12-25'].map((md) => `${y}-${md}`);
+    const vs = new Date(easter(y)); vs.setDate(vs.getDate() - 2);
+    festivosCache[y] = new Set([...fixed, ymd(vs), ...FESTIVOS_EXTRA.filter((d) => d.startsWith(String(y)))]);
+  }
+  return festivosCache[y];
+}
+const isFestivo = (day) => festivosDe(Number(day.slice(0, 4))).has(day);
+function classifyDays(days) {
+  const r = { total: days.length, lab: 0, finde: 0, fest: 0 };
+  for (const d of days) { if (isWeekendDay(d)) r.finde++; else if (isFestivo(d)) r.fest++; else r.lab++; }
+  return r;
+}
+const fmtCount = (c) => `${c.total} ${c.total === 1 ? 'día' : 'días'} · ${c.lab} lab. · ${c.finde} finde · ${c.fest} fest.`;
+
 // Iconos para eventos y rutinas. Se guardan delante del título ("🎬 Cine"); sin icono = solo texto.
 const ICONS = ['🍽️', '☕', '🍻', '🎬', '🎵', '🎮', '⚽', '🏋️', '🏃', '✈️', '🏖️', '🚗', '🏠', '🛒', '💼', '💻',
   '🎓', '📚', '📝', '🎂', '🎉', '❤️', '👨‍👩‍👧', '🐶', '💊', '🦷', '💇', '📞', '🔁', '⭐'];
@@ -335,6 +376,18 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
   // 1. Eventos puntuales (+ salientes)
   for (const ev of state.data.events) {
     if (!passFilter(ev.owner, filter)) continue;
+    if (isVacacion(ev)) {
+      // Solo las propuestas pendientes se pintan aquí (etiqueta discontinua); las confirmadas, más abajo
+      if (ev.status === 'pendiente' && passFilter(ev.owner, filter)) {
+        const a = ev.start.slice(0, 10), b = addDays((ev.end || ev.start).slice(0, 10), 1);
+        if (a < to && b > from) out.push({
+          id: 'vp:' + ev.id, title: '⏳ 🏖 Vacaciones juntos', start: a, end: b, allDay: true,
+          backgroundColor: alpha(VAC_PILL, 0.3), borderColor: '#16A34A', textColor: 'inherit',
+          classNames: ['ev-pendiente'], extendedProps: { kind: 'vacEvt', ref: ev },
+        });
+      }
+      continue;
+    }
     if (isSaliente(ev)) {
       const day = ev.start.slice(0, 10);
       if (day >= from && day < to) out.push({
@@ -423,7 +476,30 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
     }
   }
 
-  // 3. Días libres ("los dos" si están marcados ambos)
+  // 3. Vacaciones confirmadas: día entero en verde claro + etiqueta de quién
+  const vacByDay = {};
+  for (const ev of state.data.events) {
+    if (!isVacacion(ev) || ev.status !== 'confirmado') continue;
+    for (const d of daysOf(ev)) {
+      if (d < from || d >= to) continue;
+      (vacByDay[d] = vacByDay[d] || new Set());
+      vacPeople(ev).forEach((p) => vacByDay[d].add(p));
+    }
+  }
+  for (const [day, set] of Object.entries(vacByDay)) {
+    const show = filter === 'todo' || (filter === 'mio' && set.has(state.me))
+      || (filter === 'suyo' && set.has(other())) || (filter === 'juntos' && set.size === 2);
+    if (!show) continue;
+    const label = set.size === 2 ? '🏖 Vacaciones juntos' : `🏖 Vacaciones ${NAMES[[...set][0]]}`;
+    out.push({ id: 'vb:' + day, start: day, end: addDays(day, 1), allDay: true, display: 'background', backgroundColor: VAC_BG });
+    out.push({
+      id: 'vl:' + day, title: label, start: day, end: addDays(day, 1), allDay: true,
+      backgroundColor: VAC_PILL, borderColor: VAC_PILL, textColor: VAC_TEXT, classNames: ['ev-marca'],
+      extendedProps: { kind: 'vac', day },
+    });
+  }
+
+  // 4. Días libres ("los dos" si están marcados ambos)
   const byDay = {};
   for (const f of state.data.free) (byDay[f.day] = byDay[f.day] || new Set()).add(f.person);
   for (const [day, set] of Object.entries(byDay)) {
@@ -502,7 +578,7 @@ function renderFilters() {
     ['Alejandro', PERSON_COLOR.alejandro], ['Cristina', PERSON_COLOR.cristina], ['Juntos', PERSON_COLOR.ambos],
     ['Guardia', TYPE_COLOR.guardia], ['Saliente', SALIENTE_COLOR], ['Continuidad', TYPE_COLOR.continuidad],
     ['Curso', TYPE_COLOR.curso], ['Tarea', TYPE_COLOR.tarea], ['Examen', TYPE_COLOR.examen],
-    ...SUBJECTS.map((x) => [x.short, x.color]), ['Libres', FREE_COLOR.ambos],
+    ...SUBJECTS.map((x) => [x.short, x.color]), ['Vacaciones', VAC_PILL], ['Libres', FREE_COLOR.ambos],
   ];
   $('legend').replaceChildren(...legend.map(([l, c]) => h('span', {}, h('i', { class: 'dot', style: { background: c } }), l)));
 }
@@ -520,6 +596,12 @@ function openItem(p) {
   if (p.kind === 'series') return openOccurrence(p.ref, p.day);
   if (p.kind === 'saliente') return openDaySheet(p.day);
   if (p.kind === 'salienteEvt') return openSalienteSheet(p.ref);
+  if (p.kind === 'vacEvt') return openVacationForm(p.ref);
+  if (p.kind === 'vac') {
+    const evs = state.data.events.filter((e) => isVacacion(e) && e.status === 'confirmado' && daysOf(e).includes(p.day));
+    if (evs.length === 1) return openVacationForm(evs[0]);
+    return openDaySheet(p.day);
+  }
   if (p.kind === 'free') return openDaySheet(p.day);
 }
 
@@ -584,7 +666,7 @@ function iconPicker(initial, onChange) {
 // ── Hoja de un día (al pulsar un día del calendario) ─────────
 function openDaySheet(day, time) {
   const items = buildEvents(parseYmd(day), parseYmd(addDays(day, 1)), 'todo')
-    .filter((e) => e.extendedProps.kind !== 'free')
+    .filter((e) => e.extendedProps.kind !== 'free' && e.display !== 'background')
     .filter((e) => {
       if (e.allDay) {
         const endEx = e.end || addDays(e.start, 1);
@@ -622,6 +704,7 @@ function openDaySheet(day, time) {
       : h('button', { class: 'btn', style: { background: SALIENTE_COLOR, color: SALIENTE_TEXT },
           onclick: (e) => busy(e.currentTarget, async () => { await addSaliente(day); await refresh(); toast('Saliente añadido'); closeSheet(); }, '…') }, '+ Saliente'));
   }
+  quick.push(h('button', { class: 'btn', style: { background: VAC_PILL, color: VAC_TEXT }, onclick: () => openVacationForm(null, { date: day }) }, '+ Vacaciones'));
   if (state.me === 'alejandro') {
     quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'tarea' }) }, '+ Tarea'));
     quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'examen', time: time || '09:00' }) }, '+ Examen'));
@@ -638,6 +721,72 @@ function openDaySheet(day, time) {
         freeBtn('ninguno', 'Nadie'))),
   );
   document.querySelector('#sheet-root .sheet').classList.add('sheet-day'); // al menos media pantalla
+}
+
+// ── Vacaciones: crear / editar / aceptar ─────────────────────
+function openVacationForm(ev, prefill = {}) {
+  const isNew = !ev;
+  const editable = isNew || canEdit(ev.owner);
+  let owner = ev ? ev.owner : state.me;
+  const iFrom = h('input', { type: 'date', value: ev ? ev.start.slice(0, 10) : (prefill.date || today()), disabled: !editable });
+  const iTo = h('input', { type: 'date', value: ev ? (ev.end || ev.start).slice(0, 10) : (prefill.date || today()), disabled: !editable });
+  const iDesc = h('textarea', { placeholder: 'Destino, notas… (opcional)', disabled: !editable }, ev ? ev.description || '' : '');
+  const summary = h('div', { class: 'note' });
+  const updSummary = () => {
+    if (!iFrom.value || !iTo.value || iTo.value < iFrom.value) { summary.textContent = 'Revisa las fechas'; return; }
+    summary.textContent = fmtCount(classifyDays(daysOf({ start: iFrom.value, end: iTo.value })));
+  };
+  iFrom.addEventListener('change', () => { if (iTo.value < iFrom.value) iTo.value = iFrom.value; updSummary(); });
+  iTo.addEventListener('change', updSummary);
+  updSummary();
+
+  const ownerSeg = h('div', { class: 'seg', style: { margin: 0 } });
+  const renderOwnerSeg = () => {
+    const opts = [[state.me, 'Solo yo'], ['ambos', 'Los dos']];
+    if (!isNew && owner === other()) opts.unshift([other(), NAMES[other()]]);
+    ownerSeg.replaceChildren(...opts.map(([o, l]) => h('button', {
+      type: 'button', class: owner === o ? 'on' : '', disabled: !editable,
+      onclick: () => { owner = o; renderOwnerSeg(); },
+    }, l)));
+  };
+  renderOwnerSeg();
+
+  const notes = [];
+  if (ev && ev.status === 'pendiente' && ev.createdBy !== state.me) {
+    notes.push(h('div', { class: 'note warn' }, `${NAMES[ev.createdBy]} propone estas vacaciones juntos.`,
+      h('div', { class: 'actions', style: { marginTop: '8px' } },
+        h('button', { class: 'btn ok', onclick: (e) => busy(e.currentTarget, async () => { await mutate('¡Aceptadas!', 'respondProposal', ev.id, true); closeSheet(); }, '…') }, 'Aceptar'),
+        h('button', { class: 'btn', onclick: (e) => busy(e.currentTarget, async () => { await mutate('Rechazadas', 'respondProposal', ev.id, false); closeSheet(); }, '…') }, 'Rechazar'))));
+  } else if (ev && ev.status === 'pendiente') {
+    notes.push(h('div', { class: 'note' }, `⏳ Esperando que ${NAMES[other()]} acepte.`));
+  } else if (ev && ev.status === 'rechazado') {
+    notes.push(h('div', { class: 'note' }, '❌ Propuesta rechazada.'));
+  }
+  if (!editable) notes.push(h('div', { class: 'note' }, `Vacaciones de ${NAMES[ev.owner]} (solo lectura).`));
+
+  const btnSave = h('button', { class: 'btn primary', onclick: (e) => busy(e.currentTarget, async () => {
+    if (!iFrom.value || !iTo.value) throw new Error('Elige las fechas');
+    if (iTo.value < iFrom.value) throw new Error('La fecha final es anterior a la inicial');
+    await mutate(owner === 'ambos' && (isNew || ev.owner !== 'ambos') ? 'Propuesta enviada' : 'Vacaciones guardadas', 'saveEvent', {
+      id: ev ? ev.id : undefined, title: 'Vacaciones', owner, type: 'general', subject: 'vacaciones',
+      start: iFrom.value, end: iTo.value, allDay: true, color: '', description: iDesc.value.trim(),
+    });
+    closeSheet();
+  }) }, isNew ? 'Guardar vacaciones' : 'Guardar');
+  const btnDel = !isNew && editable ? h('button', { class: 'btn danger', onclick: (e) => {
+    if (!confirmInline(e.currentTarget)) return;
+    busy(e.currentTarget, async () => { await mutate('Vacaciones borradas', 'deleteEvent', ev.id); closeSheet(); }, 'Borrando…');
+  } }, 'Borrar') : null;
+
+  openSheet(isNew ? '🏖 Nuevas vacaciones' : '🏖 Vacaciones',
+    ...notes,
+    field('¿De quién?', ownerSeg,
+      h('div', { class: 'sub', style: { fontSize: '12px', color: 'var(--muted)' } }, '"Los dos" le llega al otro como propuesta para aceptar.')),
+    h('div', { class: 'row2' }, field('Desde', iFrom), field('Hasta', iTo)),
+    summary,
+    field('Notas', iDesc),
+    editable ? h('div', { class: 'actions' }, btnSave, btnDel) : null,
+  );
 }
 
 // ── Saliente manual ───────────────────────────────────────────
@@ -1005,13 +1154,18 @@ function openSeriesForm(s) {
 }
 
 // ── Propuestas (campana) ─────────────────────────────────────
+function openEvent(ev) {
+  if (isVacacion(ev)) return openVacationForm(ev);
+  if (isSaliente(ev)) return openSalienteSheet(ev);
+  return openEventForm(ev);
+}
 function pendingForMe() {
   return state.data.events.filter((e) => e.status === 'pendiente' && e.createdBy !== state.me);
 }
 function openProposals() {
   const received = pendingForMe();
   const sent = state.data.events.filter((e) => e.owner === 'ambos' && e.createdBy === state.me && e.status !== 'confirmado');
-  const row = (ev, side) => h('button', { class: 'item', onclick: () => openEventForm(ev) },
+  const row = (ev, side) => h('button', { class: 'item', onclick: () => openEvent(ev) },
     h('i', { class: 'bar', style: { background: colorOf(ev) } }),
     h('div', { class: 'main' }, h('div', { class: 'title' }, ev.title), h('div', { class: 'sub' }, fmtRange(ev))),
     side);
@@ -1323,6 +1477,67 @@ function uocImportCard() {
     btn);
 }
 
+// ── Vacaciones (panel) ───────────────────────────────────────
+function renderVacaciones() {
+  if (!state.vacYear) state.vacYear = new Date().getFullYear();
+  const y = String(state.vacYear);
+  const inYear = (d) => d.startsWith(y);
+  const vacs = state.data.events.filter(isVacacion);
+  const confirmed = vacs.filter((e) => e.status === 'confirmado');
+
+  const daysFor = (p) => {
+    const set = new Set();
+    confirmed.filter((e) => vacPeople(e).includes(p)).forEach((e) => daysOf(e).filter(inYear).forEach((d) => set.add(d)));
+    return [...set].sort();
+  };
+  const dA = daysFor('alejandro'), dC = daysFor('cristina');
+  const setC = new Set(dC);
+  const dJ = dA.filter((d) => setC.has(d));
+
+  const card = (title, color, days) => {
+    const c = classifyDays(days);
+    return h('div', { class: 'stat', style: { borderTopColor: color } },
+      h('div', { class: 'n' }, c.total), h('div', { class: 'l' }, title),
+      h('div', { class: 'x' }, `${c.lab} laborables`),
+      h('div', { class: 'x' }, `${c.finde} fin de semana · ${c.fest} festivos`));
+  };
+
+  const periodRow = (ev) => {
+    const days = daysOf(ev);
+    const c = classifyDays(days);
+    const a = parseYmd(days[0]), b = parseYmd(days[days.length - 1]);
+    const range = days.length === 1 ? fmtDay(a) : `${fmtDay(a)} → ${fmtDay(b)}`;
+    return h('button', { class: 'item', onclick: () => openVacationForm(ev) },
+      h('i', { class: 'bar', style: { background: ev.owner === 'ambos' ? PERSON_COLOR.ambos : PERSON_COLOR[ev.owner] } }),
+      h('div', { class: 'main' },
+        h('div', { class: 'title' }, (ev.status === 'pendiente' ? '⏳ ' : ev.status === 'rechazado' ? '❌ ' : '') + range),
+        h('div', { class: 'sub' }, `${c.lab} lab. · ${c.finde} finde · ${c.fest} fest.`),
+        ev.description ? h('div', { class: 'sub' }, ev.description) : null),
+      h('div', { class: 'side' }, h('div', { class: 'count' }, c.total, h('small', {}, c.total === 1 ? 'día' : 'días'))));
+  };
+  const section = (title, list) => [
+    h('div', { class: 'group-title' }, title),
+    list.length ? h('div', { class: 'list' }, list.map(periodRow)) : h('p', { class: 'empty', style: { padding: '8px 16px' } }, 'Ninguna este año.'),
+  ];
+  const byOwner = (o) => vacs.filter((e) => e.owner === o && daysOf(e).some(inYear)).sort((a, b) => a.start.localeCompare(b.start));
+
+  $('vList').replaceChildren(...[
+    h('div', { class: 'month-nav' },
+      h('button', { class: 'icon-btn', 'aria-label': 'Año anterior', onclick: () => { state.vacYear--; renderVacaciones(); } }, '‹'),
+      h('h3', {}, `Vacaciones ${y}`),
+      h('button', { class: 'icon-btn', 'aria-label': 'Año siguiente', onclick: () => { state.vacYear++; renderVacaciones(); } }, '›')),
+    h('div', { class: 'stats' },
+      card('Alejandro', PERSON_COLOR.alejandro, dA),
+      card('Cristina', PERSON_COLOR.cristina, dC)),
+    h('div', { class: 'stats', style: { marginTop: '8px', gridTemplateColumns: '1fr' } }, card('Días juntos de vacaciones', PERSON_COLOR.ambos, dJ)),
+    h('p', { class: 'sub', style: { padding: '6px 16px 0', fontSize: '12px', color: 'var(--muted)' } },
+      'Festivos: nacionales (incluye Viernes Santo). Los autonómicos y locales se pueden añadir.'),
+    ...section('Vacaciones juntos', byOwner('ambos')),
+    ...section('Vacaciones de Alejandro', byOwner('alejandro')),
+    ...section('Vacaciones de Cristina', byOwner('cristina')),
+  ].filter(Boolean));
+}
+
 // ── Rutinas ──────────────────────────────────────────────────
 function renderRutinas() {
   const box = $('rList');
@@ -1365,13 +1580,14 @@ function renderAll() {
   renderGuardias();
   renderEstudios();
   renderRutinas();
+  renderVacaciones();
   renderFab();
 }
 
 function switchTab(tab) {
   state.tab = tab;
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
-  ['calendar', 'guardias', 'estudios', 'rutinas'].forEach((t) => { $('view-' + t).hidden = t !== tab; });
+  ['calendar', 'guardias', 'estudios', 'vacaciones', 'rutinas'].forEach((t) => { $('view-' + t).hidden = t !== tab; });
   if (tab === 'calendar' && calendar) calendar.updateSize();
   renderFab();
 }
@@ -1380,7 +1596,7 @@ function switchTab(tab) {
 function renderFab() {
   const fab = $('fab');
   const t = state.tab;
-  const show = t === 'calendar' || t === 'rutinas'
+  const show = t === 'calendar' || t === 'rutinas' || t === 'vacaciones'
     || (t === 'guardias' && state.me === 'cristina')
     || (t === 'estudios' && state.me === 'alejandro');
   fab.hidden = !show;
@@ -1391,6 +1607,7 @@ function onFab() {
   if (t === 'guardias') return openEventForm(null, { type: state.guardiasFilter === 'todo' ? 'guardia' : state.guardiasFilter });
   if (t === 'estudios') return openEventForm(null, { type: state.estudiosTab === 'tareas' ? 'tarea' : 'examen', time: state.estudiosTab === 'tareas' ? null : '09:00' });
   if (t === 'rutinas') return openSeriesForm(null);
+  if (t === 'vacaciones') return openVacationForm(null);
 }
 
 // Tema de la app en este móvil: auto (sigue al móvil) | light | dark
