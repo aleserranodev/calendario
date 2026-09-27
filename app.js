@@ -69,7 +69,17 @@ const KIND_COLOR = { normal: '#DC2626', festivo: '#D97706', especial: '#7C3AED' 
 const KIND_ICON = { normal: '', festivo: '🎉 ', especial: '⭐ ' };
 const guardiaKind = (ev) => (ev.type !== 'guardia' ? null : GUARDIA_KIND[ev.subject] ? ev.subject : 'normal');
 const isWeekendDay = (dateStr) => [0, 6].includes(parseYmd(dateStr).getDay());
-const CONTINUIDAD = { s: '15:15', e: '20:00' }; // horario habitual de una continuidad
+const CONTINUIDAD = { s: '15:00', e: '20:00' };
+
+// Saliente añadido a mano (o diferido de una guardia de sábado). Se guarda como evento
+// "general" de Cristina, de día completo, con subject = 'saliente' (sin tocar la hoja ni el Apps Script).
+const isSaliente = (ev) => ev.type === 'general' && ev.subject === 'saliente';
+const salienteOn = (day) => state.data.events.find((e) => isSaliente(e) && e.start.slice(0, 10) === day);
+async function addSaliente(day) {
+  if (salienteOn(day)) return;
+  await api('saveEvent', { title: 'Saliente', owner: 'cristina', type: 'general', subject: 'saliente',
+    start: day, end: day, allDay: true, color: '', description: '' });
+} // horario habitual de una continuidad
 const TOKEN_KEY = 'cal_token';
 const POLL_MS = 10000;
 
@@ -216,14 +226,13 @@ function hoursOf(ev) {
   return Math.round(hrs * 10) / 10;
 }
 
-// Saliente de una guardia: el día siguiente, salvo viernes (no hay) y sábado (el lunes)
+// Saliente automático: el día siguiente, salvo viernes y sábado (el de sábado es diferido y se pone a mano)
 function salienteDay(ev) {
   if (ev.type !== 'guardia') return null;
   const sd = ymd(evStart(ev));             // día en que empieza la guardia
   const dow = parseYmd(sd).getDay();       // 0 domingo … 5 viernes, 6 sábado
-  if (dow === 5) return null;              // viernes: sin saliente
-  if (dow === 6) return addDays(sd, 2);    // sábado: saliente el lunes
-  return addDays(sd, 1);                   // resto: el día siguiente
+  if (dow === 5 || dow === 6) return null; // viernes y sábado: sin saliente automático
+  return addDays(sd, 1);                    // resto: el día siguiente
 }
 
 // ── Utilidades de color ───────────────────────────────────────
@@ -270,6 +279,15 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
   // 1. Eventos puntuales (+ salientes)
   for (const ev of state.data.events) {
     if (!passFilter(ev.owner, filter)) continue;
+    if (isSaliente(ev)) {
+      const day = ev.start.slice(0, 10);
+      if (day >= from && day < to) out.push({
+        id: 'm:' + ev.id, title: '😴 Saliente', start: day, end: addDays(day, 1), allDay: true,
+        backgroundColor: SALIENTE_COLOR, borderColor: SALIENTE_COLOR, textColor: SALIENTE_TEXT,
+        classNames: ['ev-marca'], extendedProps: { kind: 'salienteEvt', ref: ev, day },
+      });
+      continue;
+    }
     const color = colorOf(ev);
     const pending = ev.status === 'pendiente';
     const classNames = [];
@@ -277,8 +295,20 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
     if (ev.status === 'rechazado') classNames.push('ev-rechazado');
     if (ev.type === 'tarea' && ev.taskStatus === 'entregada') classNames.push('ev-hecha');
 
-    // Las tareas / entregas se pintan solo en su día, como evento de día completo y sin hora
-    if (ev.type === 'tarea') {
+    // Guardias: solo en el día en que empiezan (aunque duren 24 h), como bloque de día completo.
+    // El día siguiente solo muestra el saliente, si corresponde.
+    if (ev.type === 'guardia') {
+      const day = ymd(evStart(ev));
+      const hrs = hoursOf(ev);
+      out.push({
+        id: 'e:' + ev.id,
+        title: TYPE_ICON.guardia + KIND_ICON[guardiaKind(ev)] + ev.title + (hrs ? ` · ${hrs} h` : ''),
+        start: day, end: addDays(day, 1), allDay: true,
+        backgroundColor: color, borderColor: color, textColor: textOn(color),
+        classNames, extendedProps: { kind: 'event', ref: ev },
+      });
+    } else if (ev.type === 'tarea') {
+      // Las tareas / entregas se pintan solo en su día, como evento de día completo y sin hora
       const day = ymd(evStart(ev));
       out.push({
         id: 'e:' + ev.id,
@@ -287,10 +317,7 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
         backgroundColor: color, borderColor: color, textColor: textOn(color),
         classNames, extendedProps: { kind: 'event', ref: ev },
       });
-      continue;
-    }
-
-    out.push({
+    } else out.push({
       id: 'e:' + ev.id,
       title: (pending ? '⏳ ' : '') + TYPE_ICON[ev.type] + (ev.type === 'guardia' ? KIND_ICON[guardiaKind(ev)] : '')
         + (subjectOf(ev) ? subjectOf(ev).short + ' · ' : '') + ev.title,
@@ -428,6 +455,7 @@ function openItem(p) {
   if (p.kind === 'event') return openEventForm(p.ref);
   if (p.kind === 'series') return openOccurrence(p.ref, p.day);
   if (p.kind === 'saliente') return openDaySheet(p.day);
+  if (p.kind === 'salienteEvt') return openSalienteSheet(p.ref);
   if (p.kind === 'free') return openDaySheet(p.day);
 }
 
@@ -487,10 +515,13 @@ function openDaySheet(day, time) {
     .sort((a, b) => String(a.start).localeCompare(String(b.start)));
 
   const list = items.length
-    ? h('div', { class: 'mini' }, items.map((e) => h('button', { onclick: () => openItem(e.extendedProps) },
-        h('i', { class: 'dot', style: { background: e.borderColor } }),
-        h('span', { class: 't' }, e.allDay ? 'Día' : hm(new Date(e.start))),
-        h('span', {}, e.title))))
+    ? h('div', { class: 'mini day-items' }, items.map((e) => h('button', {
+        onclick: () => openItem(e.extendedProps),
+        style: { background: e.backgroundColor, color: e.textColor === 'inherit' ? 'var(--text)' : e.textColor, borderColor: e.borderColor },
+        class: e.classNames && e.classNames.includes('ev-pendiente') ? 'pend' : '',
+      },
+        h('span', { class: 't' }, e.allDay ? 'Todo el día' : `${hm(new Date(e.start))}${e.end ? '–' + hm(new Date(e.end)) : ''}`),
+        h('span', { class: 'n' }, e.title))))
     : h('p', { class: 'note' }, 'No hay nada este día.');
 
   // Estado de "libre" de ese día
@@ -505,6 +536,10 @@ function openDaySheet(day, time) {
   if (state.me === 'cristina') {
     quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'guardia' }) }, '+ Guardia'));
     quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'continuidad' }) }, '+ Continuidad'));
+    quick.push(salienteOn(day)
+      ? h('button', { class: 'btn', disabled: true }, '😴 Saliente ✓')
+      : h('button', { class: 'btn', style: { background: SALIENTE_COLOR, color: SALIENTE_TEXT },
+          onclick: (e) => busy(e.currentTarget, async () => { await addSaliente(day); await refresh(); toast('Saliente añadido'); closeSheet(); }, '…') }, '+ Saliente'));
   }
   if (state.me === 'alejandro') {
     quick.push(h('button', { class: 'btn', onclick: () => openEventForm(null, { date: day, type: 'tarea' }) }, '+ Tarea'));
@@ -520,6 +555,27 @@ function openDaySheet(day, time) {
         freeBtn('cristina', '🌿 Libre Cristina'),
         freeBtn('ambos', '💚 Libres los dos'),
         freeBtn('ninguno', 'Nadie'))),
+  );
+  document.querySelector('#sheet-root .sheet').classList.add('sheet-day'); // al menos media pantalla
+}
+
+// ── Saliente manual ───────────────────────────────────────────
+function openSalienteSheet(ev) {
+  const mine = ev.owner === state.me;
+  const iDay = h('input', { type: 'date', value: ev.start.slice(0, 10), disabled: !mine });
+  openSheet('😴 Saliente',
+    h('div', { class: 'note' }, fmtLongDay(ev.start.slice(0, 10)), ' · todo el día'),
+    mine ? field('Cambiar fecha', iDay) : null,
+    mine ? h('div', { class: 'actions' },
+      h('button', { class: 'btn primary', onclick: (e) => busy(e.currentTarget, async () => {
+        if (!iDay.value) throw new Error('Elige una fecha');
+        await mutate('Saliente movido', 'saveEvent', { ...ev, start: iDay.value, end: iDay.value });
+        closeSheet();
+      }) }, 'Guardar'),
+      h('button', { class: 'btn danger', onclick: (e) => {
+        if (!confirmInline(e.currentTarget)) return;
+        busy(e.currentTarget, async () => { await mutate('Saliente borrado', 'deleteEvent', ev.id); closeSheet(); }, 'Borrando…');
+      } }, 'Borrar')) : null,
   );
 }
 
@@ -586,6 +642,19 @@ function openEventForm(ev, prefill = {}) {
   }, KIND_ICON[k] + l)));
   renderKind();
   const fKind = field('Tipo de guardia', iKind);
+
+  // Guardia de sábado → "¿Sabes ya el saliente diferido?"
+  let salKnown = false;
+  const iSal = h('input', { type: 'date', value: addDays(sDate, 2) });
+  const salSeg = h('div', { class: 'seg', style: { margin: 0 } });
+  const renderSal = () => {
+    salSeg.replaceChildren(
+      h('button', { type: 'button', class: salKnown ? '' : 'on', onclick: () => { salKnown = false; renderSal(); } }, 'No lo sé'),
+      h('button', { type: 'button', class: salKnown ? 'on' : '', onclick: () => { salKnown = true; renderSal(); } }, 'Sí, lo sé'));
+    iSal.hidden = !salKnown;
+  };
+  renderSal();
+  const fSal = field('¿Sabes ya el saliente diferido?', salSeg, iSal);
   const fStart = field('Inicio', h('div', { class: 'row2' }, iSDate, iSTime));
   const fEnd = field('Fin', h('div', { class: 'row2' }, iEDate, iETime));
 
@@ -611,6 +680,7 @@ function openEventForm(ev, prefill = {}) {
     fTask.hidden = t !== 'tarea';
     fPresets.hidden = t !== 'guardia';
     fKind.hidden = t !== 'guardia';
+    fSal.hidden = !(editable && t === 'guardia' && iSDate.value && parseYmd(iSDate.value).getDay() === 6);
     // Guardia y continuidad: nombre opcional, sin elegir dueño ni color (rojo / naranja fijos)
     const medical = t === 'guardia' || t === 'continuidad';
     fOwner.hidden = medical;
@@ -632,6 +702,8 @@ function openEventForm(ev, prefill = {}) {
     if (iSDate.value && prevS) iEDate.value = addDays(iEDate.value || prevS, daysBetween(prevS, iSDate.value));
     prevS = iSDate.value;
     if (!kindTouched && iSDate.value) { kind = isWeekendDay(iSDate.value) ? 'festivo' : 'normal'; renderKind(); }
+    if (iSDate.value) iSal.value = addDays(iSDate.value, 2);
+    sync();
   });
   iType.addEventListener('change', () => {
     v.type = iType.value;
@@ -699,7 +771,12 @@ function openEventForm(ev, prefill = {}) {
   // Botones
   const btnSave = h('button', { class: 'btn primary', onclick: (e) => busy(e.currentTarget, async () => {
     const data = collect();
-    await mutate(data.owner === 'ambos' && isNew ? 'Propuesta enviada' : 'Guardado', 'saveEvent', data);
+    const wantsSal = !fSal.hidden && salKnown;
+    if (wantsSal && (!iSal.value || iSal.value <= iSDate.value)) throw new Error('El saliente tiene que ser después de la guardia');
+    await api('saveEvent', data);
+    if (wantsSal) await addSaliente(iSal.value);
+    await refresh();
+    toast(data.owner === 'ambos' && isNew ? 'Propuesta enviada' : wantsSal ? 'Guardado con su saliente' : 'Guardado');
     closeSheet();
   }) }, isNew ? 'Crear' : 'Guardar');
   const btnDel = !isNew && editable ? h('button', { class: 'btn danger', onclick: (e) => {
@@ -721,6 +798,7 @@ function openEventForm(ev, prefill = {}) {
     fAllDay,
     fStart,
     fEnd,
+    fSal,
     fTask,
     fColor,
     subjectsList,
