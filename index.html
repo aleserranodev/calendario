@@ -9,63 +9,101 @@
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#E11D48">
   <link rel="icon" type="image/png" href="icons/favicon-32.png">
-  <!-- iPhone -->
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Calendario">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
-  <!-- PÁGINA DE PRUEBA (Fase 2): acceso, conexión con la API y sincronización.
-       En la Fase 3 se sustituye por la app completa con calendario. -->
-  <style>
-    :root { --bg: #f8fafc; --card: #fff; --text: #0f172a; --muted: #64748b; --line: #e2e8f0; }
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: var(--bg); color: var(--text);
-           padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); }
-    h1 { font-size: 20px; margin: 0 0 4px; }
-    .muted { color: var(--muted); font-size: 13px; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
-    button { border: 0; border-radius: 10px; padding: 11px 14px; background: #3b82f6; color: #fff; font-size: 15px; cursor: pointer; }
-    button:disabled { opacity: .5; }
-    button.sec { background: var(--line); color: var(--text); }
-    button.ok { background: #10b981; }
-    button.del { background: #ef4444; }
-    input { width: 100%; padding: 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; margin: 12px 0; }
-    .card { background: var(--card); border-radius: 12px; padding: 10px 12px; margin: 8px 0; border-left: 6px solid #3b82f6; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
-    .card.pendiente { border-left-style: dashed; }
-    .actions { margin-top: 8px; display: flex; gap: 6px; }
-    .err { background: #fee2e2; color: #991b1b; padding: 10px 12px; border-radius: 10px; display: none; margin-top: 8px; }
-    .login { max-width: 360px; margin: 15vh auto 0; text-align: center; }
-    .login img { width: 96px; height: 96px; border-radius: 22px; }
-    [hidden] { display: none !important; }
-  </style>
+  <link rel="stylesheet" href="styles.css">
+  <!-- FullCalendar (vistas mes / semana / día / lista) -->
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.21/index.global.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.21/locales/es.global.min.js"></script>
 </head>
 <body>
+  <!-- Pantalla de carga -->
+  <div id="loader" class="loader"><div class="spinner"></div></div>
+
   <!-- Acceso -->
   <section id="login" class="login" hidden>
     <img src="icons/icon-192.png" alt="">
     <h1>Nuestro calendario</h1>
-    <p class="muted">Introduce tu código de acceso. Solo se pide una vez en cada móvil.</p>
+    <p style="color:var(--muted)">Introduce tu código de acceso. Solo se pide una vez en cada móvil.</p>
     <input id="code" type="password" autocomplete="current-password" placeholder="Código de acceso">
-    <button id="btnLogin" style="width:100%">Entrar</button>
-    <div class="err" id="loginErr"></div>
+    <button id="btnLogin" class="btn primary block">Entrar</button>
+    <p id="loginErr" style="color:var(--danger)"></p>
   </section>
 
-  <!-- Prueba -->
-  <section id="main" hidden>
-    <h1>Prueba de conexión</h1>
-    <div class="muted" id="who"></div>
-    <div class="err" id="err"></div>
-    <div class="row">
-      <button id="btnMine">+ Evento mío</button>
-      <button id="btnShared">+ Proponer compartido</button>
-      <button class="sec" id="btnReload">Recargar</button>
-      <button class="sec" id="btnLogout">Salir</button>
-    </div>
-    <div class="muted" id="sync"></div>
-    <div id="lista"></div>
-  </section>
+  <!-- App -->
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand"><img src="icons/icon-192.png" alt=""><span>Calendario</span></div>
+      <button id="btnBell" class="icon-btn" aria-label="Propuestas">🔔<span id="badge" class="badge" hidden></span></button>
+      <button id="btnUser" class="avatar" aria-label="Cuenta"></button>
+    </header>
+    <div id="offline" class="banner" hidden>Sin conexión. Reintentando…</div>
+
+    <main>
+      <!-- 1. Calendario (pantalla inicial) -->
+      <section id="view-calendar" class="view">
+        <div class="cal-toolbar">
+          <button id="calPrev" class="icon-btn" aria-label="Anterior">‹</button>
+          <h2 id="calTitle"></h2>
+          <button id="calNext" class="icon-btn" aria-label="Siguiente">›</button>
+          <button id="calToday" class="chip">Hoy</button>
+        </div>
+        <div id="calViews" class="seg">
+          <button data-view="dayGridMonth">Mes</button>
+          <button data-view="timeGridWeek">Semana</button>
+          <button data-view="timeGridDay">Día</button>
+          <button data-view="listMonth">Lista</button>
+        </div>
+        <div id="filters" class="chips"></div>
+        <div id="legend" class="legend"></div>
+        <div id="calendar"></div>
+      </section>
+
+      <!-- 2. Guardias -->
+      <section id="view-guardias" class="view" hidden>
+        <div class="view-head">
+          <h2>Guardias</h2>
+          <label class="toggle"><input type="checkbox" id="gPast"> Ver pasadas</label>
+        </div>
+        <div id="gList"></div>
+      </section>
+
+      <!-- 3. Estudios -->
+      <section id="view-estudios" class="view" hidden>
+        <div class="view-head"><h2>Estudios</h2></div>
+        <div id="eTabs" class="seg">
+          <button data-tab="tareas">Tareas</button>
+          <button data-tab="examenes">Exámenes</button>
+        </div>
+        <div style="padding:6px 16px">
+          <label class="toggle"><input type="checkbox" id="eDone"> <span id="eDoneLabel">Ver entregadas</span></label>
+        </div>
+        <div id="eList"></div>
+      </section>
+
+      <!-- 4. Rutinas (eventos recurrentes) -->
+      <section id="view-rutinas" class="view" hidden>
+        <div class="view-head"><h2>Rutinas</h2></div>
+        <div id="rList"></div>
+      </section>
+    </main>
+
+    <button id="fab" class="fab" aria-label="Añadir">+</button>
+
+    <nav class="tabbar">
+      <button data-tab="calendar"><span class="ico">📅</span>Calendario</button>
+      <button data-tab="guardias"><span class="ico">🏥</span>Guardias</button>
+      <button data-tab="estudios"><span class="ico">📚</span>Estudios</button>
+      <button data-tab="rutinas"><span class="ico">🔁</span>Rutinas</button>
+    </nav>
+  </div>
+
+  <div id="sheet-root"></div>
+  <div id="toast" class="toast"></div>
 
   <script src="config.js"></script>
   <script src="app.js"></script>

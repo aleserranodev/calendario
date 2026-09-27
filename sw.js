@@ -1,10 +1,12 @@
 // Service worker: hace la app instalable y la abre aunque no haya conexión.
-// Estrategia "red primero": siempre intenta bajar la última versión de GitHub
-// y solo usa la copia guardada si no hay internet.
-const CACHE = 'calendario-v1';
+// - Archivos propios: "red primero" (siempre la última versión de GitHub).
+// - FullCalendar (CDN): "caché primero" (no cambia, versión fija).
+// - Llamadas a la API de Google: nunca se cachean.
+const CACHE = 'calendario-v2';
 const SHELL = [
   './',
   './index.html',
+  './styles.css',
   './app.js',
   './config.js',
   './manifest.webmanifest',
@@ -12,6 +14,7 @@ const SHELL = [
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',
 ];
+const CDN = 'https://cdn.jsdelivr.net';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
@@ -26,17 +29,30 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  // Las llamadas a la API (Google) nunca se cachean
-  if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+
+  if (url.origin === CDN) {
+    event.respondWith(
+      caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((cache) => cache.put(req, copy));
+        return res;
+      }))
+    );
+    return;
+  }
+
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
-    fetch(event.request)
+    fetch(req)
       .then((res) => {
         const copy = res.clone();
-        caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+        caches.open(CACHE).then((cache) => cache.put(req, copy));
         return res;
       })
-      .catch(() => caches.match(event.request).then((r) => r || caches.match('./index.html')))
+      .catch(() => caches.match(req).then((r) => r || caches.match('./index.html')))
   );
 });
