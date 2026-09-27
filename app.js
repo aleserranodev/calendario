@@ -15,18 +15,30 @@ const TASK_LABEL = { pendiente: 'Pendiente', en_curso: 'En curso', entregada: 'E
 const TASK_NEXT = { pendiente: 'en_curso', en_curso: 'entregada', entregada: 'pendiente' };
 
 // Colores por defecto (cada evento puede elegir otro)
-const PERSON_COLOR = { alejandro: '#3B82F6', cristina: '#EC4899', ambos: '#10B981' };
+const PERSON_COLOR = { alejandro: '#3B82F6', cristina: '#EC4899', ambos: '#0F766E' }; // juntos: verde azulado oscuro (distinto del saliente)
 const TYPE_COLOR = {
   guardia: '#DC2626', continuidad: '#F97316', curso: '#8B5CF6', tarea: '#06B6D4', examen: '#EAB308',
 };
-const SALIENTE_COLOR = '#BBF7D0'; // verde claro
-const SALIENTE_TEXT = '#166534';
+const SALIENTE_COLOR = '#16A34A'; // verde (letra blanca)
+const SALIENTE_TEXT = '#FFFFFF';
 const FREE_COLOR = { alejandro: '#BFDBFE', cristina: '#FBCFE8', ambos: '#FDE68A' };
 const SWATCHES = [
   '#EF4444', '#DC2626', '#F43F5E', '#EC4899', '#D946EF', '#A855F7', '#8B5CF6', '#6366F1',
   '#3B82F6', '#0EA5E9', '#06B6D4', '#14B8A6', '#10B981', '#22C55E', '#84CC16', '#EAB308',
   '#F59E0B', '#F97316', '#78716C', '#64748B',
 ];
+// Iconos para eventos y rutinas. Se guardan delante del título ("🎬 Cine"); sin icono = solo texto.
+const ICONS = ['🍽️', '☕', '🍻', '🎬', '🎵', '🎮', '⚽', '🏋️', '🏃', '✈️', '🏖️', '🚗', '🏠', '🛒', '💼', '💻',
+  '🎓', '📚', '📝', '🎂', '🎉', '❤️', '👨‍👩‍👧', '🐶', '💊', '🦷', '💇', '📞', '🔁', '⭐'];
+function splitIcon(title) {
+  const t = String(title || '');
+  const icon = ICONS.find((i) => t.startsWith(i + ' '));
+  return icon ? { icon, text: t.slice(icon.length + 1) } : { icon: '', text: t };
+}
+const withIcon = (icon, text) => (icon ? `${icon} ${text}` : text);
+// Letras de los turnos en el calendario
+const LETTER = { guardia: 'G', continuidad: 'C', saliente: 'S' };
+
 const WEEKDAYS = [ // orden visual lunes→domingo; valor = Date.getDay()
   { v: 1, l: 'L' }, { v: 2, l: 'M' }, { v: 3, l: 'X' }, { v: 4, l: 'J' },
   { v: 5, l: 'V' }, { v: 6, l: 'S' }, { v: 0, l: 'D' },
@@ -326,9 +338,9 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
     if (isSaliente(ev)) {
       const day = ev.start.slice(0, 10);
       if (day >= from && day < to) out.push({
-        id: 'm:' + ev.id, title: '😴 Saliente', start: day, end: addDays(day, 1), allDay: true,
+        id: 'm:' + ev.id, title: '😴 ' + LETTER.saliente, start: day, end: addDays(day, 1), allDay: true,
         backgroundColor: SALIENTE_COLOR, borderColor: SALIENTE_COLOR, textColor: SALIENTE_TEXT,
-        classNames: ['ev-marca'], extendedProps: { kind: 'salienteEvt', ref: ev, day },
+        classNames: ['ev-letter'], extendedProps: { kind: 'salienteEvt', ref: ev, day, label: '😴 Saliente' },
       });
       continue;
     }
@@ -346,25 +358,25 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
       const hrs = hoursOf(ev);
       out.push({
         id: 'e:' + ev.id,
-        title: TYPE_ICON.guardia + kindIcon(ev) + ev.title + (hrs ? ` · ${hrs} h` : ''),
+        title: TYPE_ICON.guardia + LETTER.guardia + (kindIcon(ev) ? ' ' + kindIcon(ev).trim() : ''), // 🩺 G ⭐
         start: day, end: addDays(day, 1), allDay: true,
-        backgroundColor: color, borderColor: color, textColor: textOn(color),
-        classNames, extendedProps: { kind: 'event', ref: ev },
+        backgroundColor: color, borderColor: color, textColor: '#FFFFFF',
+        classNames: [...classNames, 'ev-letter'],
+        extendedProps: { kind: 'event', ref: ev, label: TYPE_ICON.guardia + kindIcon(ev) + ev.title + (hrs ? ` · ${hrs} h` : '') },
       });
     } else if (ev.type === 'tarea') {
       // Las tareas / entregas se pintan solo en su día, como evento de día completo y sin hora
       const day = ymd(evStart(ev));
       out.push({
         id: 'e:' + ev.id,
-        title: TYPE_ICON.tarea + (subjectOf(ev) ? subjectOf(ev).short + ' · ' : '') + ev.title,
+        title: displayTitle(ev),
         start: day, end: addDays(day, 1), allDay: true,
         backgroundColor: color, borderColor: color, textColor: textOn(color),
         classNames, extendedProps: { kind: 'event', ref: ev },
       });
     } else out.push({
       id: 'e:' + ev.id,
-      title: (pending ? '⏳ ' : '') + TYPE_ICON[ev.type] + kindIcon(ev)
-        + (subjectOf(ev) ? subjectOf(ev).short + ' · ' : '') + ev.title,
+      title: (pending ? '⏳ ' : '') + (ev.type === 'continuidad' ? TYPE_ICON.continuidad + LETTER.continuidad : displayTitle(ev)),
       start: ev.allDay ? ev.start.slice(0, 10) : ev.start,
       // Entregas (inicio = fin): se les da 1 minuto para que una de 23:59 no invada el día siguiente
       end: ev.allDay ? addDays(ev.end || ev.start, 1)
@@ -373,19 +385,19 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
       backgroundColor: pending ? alpha(color, 0.18) : color,
       borderColor: color,
       textColor: pending ? 'inherit' : textOn(color),
-      classNames,
-      extendedProps: { kind: 'event', ref: ev },
+      classNames: ev.type === 'continuidad' ? [...classNames, 'ev-letter'] : classNames,
+      extendedProps: { kind: 'event', ref: ev, label: (pending ? '⏳ ' : '') + displayTitle(ev) },
     });
 
     const sd = salienteDay(ev);
     if (sd && sd >= from && sd < to) {
       out.push({
         id: 's:' + ev.id,
-        title: '😴 Saliente',
+        title: '😴 ' + LETTER.saliente,
         start: sd, allDay: true,
         backgroundColor: SALIENTE_COLOR, borderColor: SALIENTE_COLOR, textColor: SALIENTE_TEXT,
-        classNames: ['ev-marca'],
-        extendedProps: { kind: 'saliente', ref: ev, day: sd },
+        classNames: ['ev-letter'],
+        extendedProps: { kind: 'saliente', ref: ev, day: sd, label: '😴 Saliente' },
       });
     }
   }
@@ -401,11 +413,12 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
       if (s.exdates.includes(d)) continue;
       out.push({
         id: `r:${s.id}:${d}`,
-        title: '🔁 ' + s.title,
+        title: s.type === 'continuidad' ? TYPE_ICON.continuidad + LETTER.continuidad : s.title,
         start: `${d}T${s.startTime}:00`,
         end: `${d}T${s.endTime}:00`,
-        backgroundColor: color, borderColor: color, textColor: textOn(color),
-        extendedProps: { kind: 'series', ref: s, day: d },
+        backgroundColor: color, borderColor: color, textColor: s.type === 'continuidad' ? '#FFFFFF' : textOn(color),
+        classNames: s.type === 'continuidad' ? ['ev-letter'] : [],
+        extendedProps: { kind: 'series', ref: s, day: d, label: s.title },
       });
     }
   }
@@ -494,6 +507,13 @@ function renderFilters() {
   $('legend').replaceChildren(...legend.map(([l, c]) => h('span', {}, h('i', { class: 'dot', style: { background: c } }), l)));
 }
 
+// Título mostrado: icono elegido (si lo hay) o el del tipo, asignatura y texto
+function displayTitle(ev) {
+  const { icon, text } = splitIcon(ev.title);
+  const lead = icon ? icon + ' ' : TYPE_ICON[ev.type] + kindIcon(ev);
+  return lead + (subjectOf(ev) ? subjectOf(ev).short + ' · ' : '') + text;
+}
+
 // Qué hacer al pulsar un elemento del calendario o de una lista
 function openItem(p) {
   if (p.kind === 'event') return openEventForm(p.ref);
@@ -544,6 +564,23 @@ function colorPicker(initial, onChange) {
   return wrap;
 }
 
+function iconPicker(initial, onChange) {
+  const wrap = h('div', { class: 'swatches icons' });
+  ['', ...ICONS].forEach((ic) => {
+    const b = h('button', {
+      type: 'button', class: 'swatch icon' + (ic ? '' : ' auto') + (ic === initial ? ' on' : ''),
+      title: ic || 'Sin icono',
+      onclick: () => {
+        wrap.querySelectorAll('.swatch').forEach((x) => x.classList.remove('on'));
+        b.classList.add('on');
+        onChange(ic);
+      },
+    }, ic || 'Sin');
+    wrap.append(b);
+  });
+  return wrap;
+}
+
 // ── Hoja de un día (al pulsar un día del calendario) ─────────
 function openDaySheet(day, time) {
   const items = buildEvents(parseYmd(day), parseYmd(addDays(day, 1)), 'todo')
@@ -565,7 +602,7 @@ function openDaySheet(day, time) {
         class: e.classNames && e.classNames.includes('ev-pendiente') ? 'pend' : '',
       },
         h('span', { class: 't' }, e.allDay ? 'Todo el día' : `${hm(new Date(e.start))}${e.end ? '–' + hm(new Date(e.end)) : ''}`),
-        h('span', { class: 'n' }, e.title))))
+        h('span', { class: 'n' }, e.extendedProps.label || e.title))))
     : h('p', { class: 'note' }, 'No hay nada este día.');
 
   // Estado de "libre" de ese día
@@ -648,7 +685,8 @@ function openEventForm(ev, prefill = {}) {
   }
 
   // Controles
-  const iTitle = h('input', { value: v.title, maxLength: 120, placeholder: 'Título' });
+  let { icon: evIcon, text: titleText } = splitIcon(v.title);
+  const iTitle = h('input', { value: titleText, maxLength: 110, placeholder: 'Título' });
   const fTitle = field('Título', iTitle);
   const iOwner = h('div', { class: 'seg', style: { margin: 0 } });
   const iType = h('select');
@@ -665,6 +703,7 @@ function openEventForm(ev, prefill = {}) {
 
   const fOwner = field('¿De quién es?', iOwner);
   const fColor = editable ? field('Color', colorPicker(color, (c) => { color = c; })) : h('div');
+  const fIcon = editable ? field('Icono', iconPicker(evIcon, (ic) => { evIcon = ic; })) : h('div');
   const fSubject = field('Asignatura', iSubject);
   const fTask = field('Estado', iTask);
   const fAllDay = h('label', { class: 'check' }, iAllDay, h('span', { id: 'lblAllDay' }, 'Todo el día'));
@@ -750,6 +789,7 @@ function openEventForm(ev, prefill = {}) {
     const medical = t === 'guardia' || t === 'continuidad';
     fOwner.hidden = medical;
     fColor.hidden = medical;
+    fIcon.hidden = medical;
     fTitle.querySelector('span').textContent = medical ? 'Nombre (opcional)' : 'Título';
     iTitle.placeholder = medical ? TYPE_LABEL[t] : 'Título';
     fAllDay.hidden = t === 'guardia';
@@ -796,8 +836,9 @@ function openEventForm(ev, prefill = {}) {
   function collect() {
     const type = v.type;
     const medical = type === 'guardia' || type === 'continuidad';
-    const title = iTitle.value.trim() || (medical ? TYPE_LABEL[type] : '');
-    if (!title) throw new Error('Pon un título');
+    const text = iTitle.value.trim() || (medical ? TYPE_LABEL[type] : '');
+    if (!text) throw new Error('Pon un título');
+    const title = medical ? text : withIcon(evIcon, text);
     const allDay = type !== 'guardia' && iAllDay.checked;
     if (!iSDate.value) throw new Error('Falta la fecha');
     let start, end;
@@ -868,6 +909,7 @@ function openEventForm(ev, prefill = {}) {
     fKindDate,
     fSal,
     fTask,
+    fIcon,
     fColor,
     subjectsList,
     field('Descripción', iDesc),
@@ -912,7 +954,9 @@ function openSeriesForm(s) {
   };
   const types = allowedTypes(state.me).filter((t) => !['tarea', 'examen', 'guardia'].includes(t));
 
-  const iTitle = h('input', { value: v.title, maxLength: 120, placeholder: 'Ej. Trabajo, Clase, Gimnasio' });
+  let { icon: sIcon, text: sText } = splitIcon(v.title);
+  if (isNew) sIcon = '🔁';
+  const iTitle = h('input', { value: sText, maxLength: 110, placeholder: 'Ej. Trabajo, Clase, Gimnasio' });
   const iType = h('select', {}, types.map((t) => h('option', { value: t, selected: t === v.type }, TYPE_LABEL[t])));
   const days = h('div', { class: 'days' });
   const renderDays = () => days.replaceChildren(...WEEKDAYS.map((w) => h('button', {
@@ -928,8 +972,9 @@ function openSeriesForm(s) {
   let color = v.color || '';
 
   const btnSave = h('button', { class: 'btn primary', onclick: (e) => busy(e.currentTarget, async () => {
-    const title = iTitle.value.trim();
-    if (!title) throw new Error('Pon un título');
+    const text = iTitle.value.trim();
+    if (!text) throw new Error('Pon un título');
+    const title = withIcon(sIcon, text);
     if (!v.weekdays.length) throw new Error('Elige al menos un día');
     if (!iST.value || !iET.value || iET.value <= iST.value) throw new Error('Revisa las horas');
     await mutate('Rutina guardada', 'saveSeries', {
@@ -946,6 +991,7 @@ function openSeriesForm(s) {
 
   openSheet(isNew ? 'Nueva rutina' : 'Editar rutina',
     field('Título', iTitle),
+    field('Icono', iconPicker(sIcon, (ic) => { sIcon = ic; })),
     field('Tipo', iType),
     field('Días de la semana', days),
     field('Horario', h('div', { class: 'row2' }, iST, iET)),
