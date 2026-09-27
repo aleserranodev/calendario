@@ -203,6 +203,7 @@ function evEnd(ev) { return ev.allDay ? parseYmd(ev.end || ev.start) : new Date(
 // Texto "Sáb 3 oct · 08:00 → Dom 4 oct 08:00"
 function fmtRange(ev) {
   const s = evStart(ev), e = evEnd(ev);
+  if (ev.type === 'tarea') return fmtDay(s); // entregas: solo el día
   if (ev.allDay) {
     return ymd(s) === ymd(e) ? `${fmtDay(s)} · todo el día` : `${fmtDay(s)} → ${fmtDay(e)}`;
   }
@@ -275,6 +276,19 @@ function buildEvents(rangeStart, rangeEnd, filter = state.filter) {
     if (pending) classNames.push('ev-pendiente');
     if (ev.status === 'rechazado') classNames.push('ev-rechazado');
     if (ev.type === 'tarea' && ev.taskStatus === 'entregada') classNames.push('ev-hecha');
+
+    // Las tareas / entregas se pintan solo en su día, como evento de día completo y sin hora
+    if (ev.type === 'tarea') {
+      const day = ymd(evStart(ev));
+      out.push({
+        id: 'e:' + ev.id,
+        title: TYPE_ICON.tarea + (subjectOf(ev) ? subjectOf(ev).short + ' · ' : '') + ev.title,
+        start: day, end: addDays(day, 1), allDay: true,
+        backgroundColor: color, borderColor: color, textColor: textOn(color),
+        classNames, extendedProps: { kind: 'event', ref: ev },
+      });
+      continue;
+    }
 
     out.push({
       id: 'e:' + ev.id,
